@@ -1,0 +1,129 @@
+## 📋 SPECS PROJETO VIDEO TRANSCODING
+
+### **REQUISITOS:**
+
+```
+Input: 2TB vídeos (vários formatos)
+Output: 360p + 720p MP4 H.264
+Workers: 8 paralelos (8 cores disponíveis)
+Storage: MinIO ou filesystem direto
+```
+
+### **STACK:**
+
+```
+Orchestration: Apache Airflow 2.8+
+Task Queue: Celery + Redis
+Object Storage: MinIO
+API: FastAPI + Uvicorn
+Processing: FFmpeg (via Python subprocess)
+OS: Ubuntu 24.04
+```
+
+### **COMPONENTES DOCKER:**
+
+1. **Redis** (message broker)
+2. **MinIO** (object storage)
+3. **PostgreSQL** (Airflow metadata)
+4. **Airflow Webserver**
+5. **Airflow Scheduler**
+6. **Celery Worker** (8 replicas ou 1 com concurrency=8)
+7. **FastAPI** (upload/status API)
+
+### **VOLUMES:**
+
+```
+/data/minio - MinIO storage
+/data/videos/source - Source videos
+/data/videos/360p - Transcoded 360p
+/data/videos/720p - Transcoded 720p
+/data/airflow/dags - DAG files
+/data/airflow/logs - Logs
+```
+
+### **PORTAS:**
+
+```
+9000 - MinIO API
+9001 - MinIO Console
+8080 - Airflow Webserver
+8000 - FastAPI
+6379 - Redis
+5432 - PostgreSQL
+```
+
+### **AIRFLOW DAG LOGIC:**
+
+```python
+# Pseudocode
+def transcode_video(video_path):
+    # Task 1: Download from MinIO (if used)
+    # Task 2: Transcode 360p
+    # Task 3: Transcode 720p  
+    # Task 4: Upload outputs to MinIO
+    # Task 5: Cleanup temp files
+```
+
+### **CELERY TASK:**
+
+```python
+@app.task
+def ffmpeg_transcode(input_file, output_file, resolution):
+    cmd = [
+        'ffmpeg', '-i', input_file,
+        '-vf', f'scale=-2:{resolution}',
+        '-c:v', 'libx264', '-crf', '23',
+        '-c:a', 'aac', '-b:a', '128k',
+        output_file
+    ]
+    subprocess.run(cmd)
+```
+
+### **FASTAPI ENDPOINTS:**
+
+```
+POST /upload - Upload video
+GET /status/{job_id} - Job status
+GET /videos - List processed videos
+```
+
+### **ENV VARS NEEDED:**
+
+```
+MINIO_ROOT_USER=admin
+MINIO_ROOT_PASSWORD=<strong_password>
+AIRFLOW__CORE__EXECUTOR=CeleryExecutor
+AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://...
+AIRFLOW__CELERY__BROKER_URL=redis://redis:6379/0
+AIRFLOW__CELERY__RESULT_BACKEND=db+postgresql://...
+CELERY_CONCURRENCY=8
+```
+
+### **DOCKER COMPOSE REQUIREMENTS:**
+
+```yaml
+# Network: bridge
+# Restart: always (all services)
+# Health checks: postgres, redis, minio
+# Depends_on: webserver needs postgres+redis
+# Celery worker: scale or concurrency=8
+```
+
+### **CRITICAL:**
+
+```
+FFmpeg in worker container:
+apt-get install ffmpeg -y
+
+Python deps:
+- apache-airflow[celery,postgres]
+- celery[redis]
+- minio
+- fastapi
+- uvicorn
+- ffmpeg-python
+```
+
+---
+
+**Passa isso pra IA montar docker compose.yml + Dockerfiles completos.**

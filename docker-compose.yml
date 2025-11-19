@@ -1,0 +1,447 @@
+services:
+  # =========================================
+  # PostgreSQL Database
+  # =========================================
+  postgres:
+    image: postgres:latest
+    container_name: transcode-postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    ports:
+      - "15432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - transcode-network
+
+  # =========================================
+  # Redis (Celery Broker)
+  # =========================================
+  redis:
+    image: redis:latest
+    container_name: transcode-redis
+    command: redis-server --appendonly yes
+    volumes:
+      - ./data/redis:/data
+    ports:
+      - "16379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - transcode-network
+
+  # =========================================
+  # MinIO (S3-Compatible Storage)
+  # =========================================
+  minio:
+    image: minio/minio:latest
+    container_name: transcode-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    volumes:
+      - ./data/minio:/data
+    ports:
+      - "19000:9000"
+      - "19001:9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 30s
+      timeout: 20s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - transcode-network
+
+  # =========================================
+  # MinIO Client (for bucket creation)
+  # =========================================
+  minio-init:
+    image: minio/mc:latest
+    container_name: transcode-minio-init
+    depends_on:
+      - minio
+    entrypoint: >
+      /bin/sh -c "
+      sleep 10;
+      /usr/bin/mc alias set myminio http://minio:9000 ${MINIO_ROOT_USER} ${MINIO_ROOT_PASSWORD};
+      /usr/bin/mc mb myminio/videos --ignore-existing;
+      /usr/bin/mc anonymous set download myminio/videos;
+      exit 0;
+      "
+    networks:
+      - transcode-network
+
+  # =========================================
+  # Airflow Webserver
+  # =========================================
+  airflow-webserver:
+    image: apache/airflow:2.10.4
+    container_name: transcode-airflow-webserver
+    depends_on:
+      - postgres
+      - redis
+      - airflow-init
+    environment:
+      AIRFLOW__CORE__EXECUTOR: ${AIRFLOW__CORE__EXECUTOR}
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: ${AIRFLOW__CORE__SQL_ALCHEMY_CONN}
+      AIRFLOW__CELERY__BROKER_URL: ${AIRFLOW__CELERY__BROKER_URL}
+      AIRFLOW__CELERY__RESULT_BACKEND: ${AIRFLOW__CELERY__RESULT_BACKEND}
+      AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY}
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: ${AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION}
+      AIRFLOW__CORE__LOAD_EXAMPLES: ${AIRFLOW__CORE__LOAD_EXAMPLES}
+      AIRFLOW__API__AUTH_BACKENDS: ${AIRFLOW__API__AUTH_BACKEND}
+      AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW__WEBSERVER__SECRET_KEY}
+      _AIRFLOW_DB_MIGRATE: 'true'
+      _AIRFLOW_WWW_USER_CREATE: 'true'
+      _AIRFLOW_WWW_USER_USERNAME: ${AIRFLOW_ADMIN_USER:-admin}
+      _AIRFLOW_WWW_USER_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD:-admin}
+    volumes:
+      - ./data/airflow/dags:/opt/airflow/dags
+      - ./data/airflow/logs:/opt/airflow/logs
+      - ./data/airflow/plugins:/opt/airflow/plugins
+      - ./data/temp:/data/temp
+    ports:
+      - "18080:8080"
+    command: webserver
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - transcode-network
+
+  # =========================================
+  # Airflow Init (Database Setup)
+  # =========================================
+  airflow-init:
+    image: apache/airflow:2.10.4
+    container_name: transcode-airflow-init
+    depends_on:
+      - postgres
+      - redis
+    environment:
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: ${AIRFLOW__CORE__SQL_ALCHEMY_CONN}
+      AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY}
+      _AIRFLOW_DB_MIGRATE: 'true'
+      _AIRFLOW_WWW_USER_CREATE: 'true'
+      _AIRFLOW_WWW_USER_USERNAME: ${AIRFLOW_ADMIN_USER:-admin}
+      _AIRFLOW_WWW_USER_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD:-admin}
+    volumes:
+      - ./data/airflow/dags:/opt/airflow/dags
+      - ./data/airflow/logs:/opt/airflow/logs
+      - ./data/airflow/plugins:/opt/airflow/plugins
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        airflow db migrate &&
+        airflow users create \
+          --username $${_AIRFLOW_WWW_USER_USERNAME} \
+          --firstname Admin \
+          --lastname User \
+          --role Admin \
+          --email admin@example.com \
+          --password $${_AIRFLOW_WWW_USER_PASSWORD} || true
+    networks:
+      - transcode-network
+
+  # =========================================
+  # Airflow Scheduler
+  # =========================================
+  airflow-scheduler:
+    image: apache/airflow:2.10.4
+    container_name: transcode-airflow-scheduler
+    depends_on:
+      - postgres
+      - redis
+      - airflow-init
+    environment:
+      AIRFLOW__CORE__EXECUTOR: ${AIRFLOW__CORE__EXECUTOR}
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: ${AIRFLOW__CORE__SQL_ALCHEMY_CONN}
+      AIRFLOW__CELERY__BROKER_URL: ${AIRFLOW__CELERY__BROKER_URL}
+      AIRFLOW__CELERY__RESULT_BACKEND: ${AIRFLOW__CELERY__RESULT_BACKEND}
+      AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY}
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: ${AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION}
+      AIRFLOW__CORE__LOAD_EXAMPLES: ${AIRFLOW__CORE__LOAD_EXAMPLES}
+    volumes:
+      - ./data/airflow/dags:/opt/airflow/dags
+      - ./data/airflow/logs:/opt/airflow/logs
+      - ./data/airflow/plugins:/opt/airflow/plugins
+      - ./data/temp:/data/temp
+    command: scheduler
+    healthcheck:
+      test: ["CMD", "airflow", "jobs", "check", "--job-type", "SchedulerJob", "--hostname", "$HOSTNAME"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - transcode-network
+
+  # =========================================
+  # Celery Worker (Video Processing)
+  # =========================================
+  celery-worker:
+    image: apache/airflow:2.10.4
+    container_name: transcode-celery-worker
+    depends_on:
+      - postgres
+      - redis
+      - airflow-init
+    environment:
+      AIRFLOW__CORE__EXECUTOR: ${AIRFLOW__CORE__EXECUTOR}
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: ${AIRFLOW__CORE__SQL_ALCHEMY_CONN}
+      AIRFLOW__CELERY__BROKER_URL: ${AIRFLOW__CELERY__BROKER_URL}
+      AIRFLOW__CELERY__RESULT_BACKEND: ${AIRFLOW__CELERY__RESULT_BACKEND}
+      AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY}
+      DUMB_INIT_SETSID: "0"
+    volumes:
+      - ./data/airflow/dags:/opt/airflow/dags
+      - ./data/airflow/logs:/opt/airflow/logs
+      - ./data/airflow/plugins:/opt/airflow/plugins
+      - ./data/temp:/data/temp
+    command: celery worker
+    healthcheck:
+      test: ["CMD", "celery", "--app", "airflow.providers.celery.executors.celery_executor.app", "inspect", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - transcode-network
+
+  # =========================================
+  # Flower (Celery Monitoring)
+  # =========================================
+  flower:
+    image: mher/flower:latest
+    container_name: transcode-flower
+    depends_on:
+      - redis
+      - celery-worker
+    environment:
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND}
+      FLOWER_PORT: ${FLOWER_PORT}
+      FLOWER_BASIC_AUTH: ${FLOWER_BASIC_AUTH}
+    ports:
+      - "15555:5555"
+    restart: unless-stopped
+    networks:
+      - transcode-network
+
+  # =========================================
+  # FastAPI Application
+  # =========================================
+  fastapi:
+    build:
+      context: ./app
+      dockerfile: Dockerfile
+    container_name: transcode-fastapi
+    depends_on:
+      - postgres
+      - redis
+      - minio
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      REDIS_URL: ${REDIS_URL}
+      MINIO_HOST: ${MINIO_HOST}
+      MINIO_PORT: ${MINIO_PORT}
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY}
+      SECRET_KEY: ${SECRET_KEY}
+      API_HOST: ${API_HOST}
+      API_PORT: ${API_PORT}
+    volumes:
+      - ./app:/app
+      - ./data/temp:/data/temp
+    ports:
+      - "18000:8000"
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - transcode-network
+
+  # =========================================
+  # NGINX (Reverse Proxy & Streaming)
+  # =========================================
+  nginx:
+    image: nginx:latest
+    container_name: transcode-nginx
+    depends_on:
+      - fastapi
+      - minio
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/ssl:/etc/nginx/ssl:ro
+    ports:
+      - "10080:80"
+      - "10443:443"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - transcode-network
+
+  # =========================================
+  # Prometheus (Metrics Collection)
+  # =========================================
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: transcode-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alerts:/etc/prometheus/alerts:ro
+      - ./data/prometheus:/prometheus
+    ports:
+      - "19090:9090"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9090/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - transcode-network
+
+  # =========================================
+  # Grafana (Metrics Visualization)
+  # =========================================
+  grafana:
+    image: grafana/grafana:latest
+    container_name: transcode-grafana
+    depends_on:
+      - prometheus
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
+      GF_SERVER_HTTP_PORT: ${GRAFANA_PORT}
+    volumes:
+      - ./data/grafana:/var/lib/grafana
+    ports:
+      - "13000:3000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - transcode-network
+
+  # =========================================
+  # Alertmanager (Alert Management)
+  # =========================================
+  alertmanager:
+    image: prom/alertmanager:latest
+    container_name: transcode-alertmanager
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--storage.path=/alertmanager'
+    volumes:
+      - ./prometheus/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - ./data/alertmanager:/alertmanager
+    ports:
+      - "19093:9093"
+    restart: unless-stopped
+    networks:
+      - transcode-network
+
+  # =========================================
+  # Node Exporter (System Metrics)
+  # =========================================
+  node-exporter:
+    image: prom/node-exporter:latest
+    container_name: transcode-node-exporter
+    command:
+      - '--path.rootfs=/host'
+    volumes:
+      - '/:/host:ro,rslave'
+    ports:
+      - "19100:9100"
+    restart: unless-stopped
+    networks:
+      - transcode-network
+
+  # =========================================
+  # Postgres Exporter (Database Metrics)
+  # =========================================
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:latest
+    container_name: transcode-postgres-exporter
+    depends_on:
+      - postgres
+    environment:
+      DATA_SOURCE_NAME: "postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable"
+    ports:
+      - "19187:9187"
+    restart: unless-stopped
+    networks:
+      - transcode-network
+
+  # =========================================
+  # Redis Exporter (Redis Metrics)
+  # =========================================
+  redis-exporter:
+    image: oliver006/redis_exporter:latest
+    container_name: transcode-redis-exporter
+    depends_on:
+      - redis
+    environment:
+      REDIS_ADDR: "redis:6379"
+    ports:
+      - "19121:9121"
+    restart: unless-stopped
+    networks:
+      - transcode-network
+
+# =========================================
+# Networks
+# =========================================
+networks:
+  transcode-network:
+    driver: bridge
+
+# =========================================
+# Volumes (for reference - we use bind mounts)
+# =========================================
+volumes:
+  postgres_data:
+  redis_data:
+  minio_data:
+  prometheus_data:
+  grafana_data:
+  airflow_data:

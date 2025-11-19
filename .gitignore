@@ -1,0 +1,88 @@
+# Environment variables
+.env
+.env.local
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+venv/
+ENV/
+env/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.hypothesis/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Data directories (persistent data)
+data/minio/*
+data/postgres/*
+data/redis/*
+data/prometheus/*
+data/grafana/*
+data/airflow/logs/*
+data/airflow/plugins/*
+data/temp/*
+data/backups/*
+data/logs/*
+
+# Keep directory structure but ignore content
+!data/minio/.gitkeep
+!data/postgres/.gitkeep
+!data/redis/.gitkeep
+!data/prometheus/.gitkeep
+!data/grafana/.gitkeep
+!data/airflow/dags/.gitkeep
+!data/airflow/logs/.gitkeep
+!data/airflow/plugins/.gitkeep
+!data/temp/.gitkeep
+!data/backups/.gitkeep
+!data/logs/.gitkeep
+
+# Logs
+*.log
+
+# Docker
+.docker/
+
+# Certificates
+*.pem
+*.key
+*.crt
+
+# Secrets
+secrets/
+vault/
+
+# Temporary files
+tmp/
+*.tmp
