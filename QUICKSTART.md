@@ -1,101 +1,101 @@
 # 🚀 Transcode Flow - Quick Start
 
-## 📋 Pré-requisitos
+## 📋 Prerequisites
 
 - Docker 20.10+
 - Docker Compose 2.0+
-- 100GB+ espaço em disco
+- 100GB+ disk space
 - 8GB+ RAM
 
-## ⚡ Setup Rápido (5 minutos)
+## ⚡ Quick Setup (5 minutes)
 
-### 1. Configure o ambiente
+### 1. Configure environment
 
 ```bash
-# Copie o arquivo de configuração
+# Copy configuration file
 cp .env.example .env
 
-# Edite as senhas (IMPORTANTE!)
+# Edit passwords (IMPORTANT!)
 nano .env
 ```
 
-**⚠️ ALTERE ESTAS SENHAS:**
+**⚠️ CHANGE THESE PASSWORDS:**
 - POSTGRES_PASSWORD
 - MINIO_ROOT_PASSWORD
 - AIRFLOW__CORE__FERNET_KEY
 - SECRET_KEY
 - GRAFANA_ADMIN_PASSWORD
 
-**💡 Dica:** Use `make init` para setup automático!
+**💡 Tip:** Use `make init` for automatic setup!
 
-### 2. Inicie o projeto
+### 2. Start the project
 
 ```bash
-# Opção 1: Setup automático (recomendado)
+# Option 1: Automatic setup (recommended)
 make init
 
-# Opção 2: Manual
+# Option 2: Manual
 docker compose up -d
 make migrate
 ```
 
-### 3. Verifique a saúde
+### 3. Check health
 
 ```bash
 make health
 ```
 
-## 🌐 Acesse os Serviços
+## 🌐 Access Services
 
-| Serviço | URL | Login |
+| Service | URL | Login |
 |---------|-----|-------|
 | **API Docs** | http://localhost:10080/docs | - |
-| **Airflow** | http://localhost:18080 | admin / (senha do .env) |
-| **Grafana** | http://localhost:13000 | admin / (senha do .env) |
-| **MinIO Console** | http://localhost:19001 | admin / (senha do .env) |
-| **Flower** | http://localhost:15555 | admin / (senha do .env) |
+| **Airflow** | http://localhost:18080 | admin / (password from .env) |
+| **Grafana** | http://localhost:13000 | admin / (password from .env) |
+| **MinIO Console** | http://localhost:19001 | admin / (password from .env) |
+| **Flower** | http://localhost:15555 | admin / (password from .env) |
 | **Prometheus** | http://localhost:19090 | - |
 
-## 📝 Comandos Úteis
+## 📝 Useful Commands
 
 ```bash
-# Ver logs
+# View logs
 make logs
 
-# Ver logs da API
+# View API logs
 make logs-api
 
-# Parar tudo
+# Stop everything
 make down
 
-# Reiniciar
+# Restart
 make restart
 
-# Backup do banco
+# Database backup
 make backup
 
-# Testes
+# Tests
 make test
 
-# Acessar shell da API
+# Access API shell
 make shell-api
 
-# Acessar PostgreSQL
+# Access PostgreSQL
 make shell-pg
 
-# Ver todos os comandos
+# View all commands
 make help
 ```
 
-## ✅ Verificação
+## ✅ Verification
 
-### 1. Teste a API
+### 1. Test API
 
 ```bash
 curl http://localhost:10080/health
 ```
 
-**Resposta esperada:**
+**Expected response:**
 ```json
 {
   "status": "healthy",
@@ -104,77 +104,77 @@ curl http://localhost:10080/health
 }
 ```
 
-### 2. Verifique os containers
+### 2. Check containers
 
 ```bash
 docker compose ps
 ```
 
-**Todos devem estar "Up" (healthy)**
+**All should be "Up" (healthy)**
 
-### 3. Teste o banco de dados
+### 3. Test database
 
 ```bash
 docker compose exec postgres psql -U transcode_user -d transcode_db -c "SELECT COUNT(*) FROM api_keys;"
 ```
 
-**Deve retornar 1** (API key padrão)
+**Should return 1** (default API key)
 
-## 🐛 Problemas Comuns
+## 🐛 Common Issues
 
 ### "Port already in use"
 
 ```bash
-# Verifique o que está usando a porta
+# Check what's using the port
 sudo lsof -i :80
 
-# Pare o serviço ou mude a porta no docker-compose.yml
+# Stop the service or change the port in docker-compose.yml
 ```
 
 ### "Cannot connect to Docker daemon"
 
 ```bash
-# Inicie o Docker
+# Start Docker
 sudo systemctl start docker
 
-# Ou no WSL2
+# Or on WSL2
 sudo service docker start
 ```
 
 ### "Out of disk space"
 
 ```bash
-# Limpe containers antigos
+# Clean old containers
 docker system prune -a
 
-# Verifique espaço
+# Check disk space
 df -h
 ```
 
-## 📚 Próximos Passos
+## 📚 Next Steps
 
-1. ✅ **Leia a documentação:** [docs/README.md](docs/README.md)
-2. ✅ **Siga os sprints:** [docs/sprints/](docs/sprints/)
-3. ✅ **Sprint 1:** Implemente a API de upload
-4. ✅ **Sprint 2:** Configure o Airflow DAG
-5. ✅ **Sprint 3:** Integre FFmpeg e Whisper
+1. ✅ **Read documentation:** [docs/README.md](docs/README.md)
+2. ✅ **Follow sprints:** [docs/sprints/](docs/sprints/)
+3. ✅ **Sprint 1:** Implement upload API
+4. ✅ **Sprint 2:** Configure Airflow DAG
+5. ✅ **Sprint 3:** Integrate FFmpeg and Whisper
 
-## 🔒 Segurança
+## 🔒 Security
 
-**ANTES DE IR PARA PRODUÇÃO:**
+**BEFORE GOING TO PRODUCTION:**
 
-1. ✅ Altere TODAS as senhas padrão
+1. ✅ Change ALL default passwords
 2. ✅ Configure SSL/TLS (Sprint 10)
 3. ✅ Configure firewall
-4. ✅ Habilite backups automáticos
-5. ✅ Revise as permissões de API keys
+4. ✅ Enable automatic backups
+5. ✅ Review API key permissions
 
-## 📞 Precisa de Ajuda?
+## 📞 Need Help?
 
-- 📖 [README.md](README.md) - Documentação completa
+- 📖 [README.md](README.md) - Complete documentation
 - 📋 [PRD.md](docs/PRD.md) - Requirements
-- 🏃 [Sprints](docs/sprints/) - Planejamento
-- 🐛 [Issues](https://github.com/your-repo/issues)
+- 🏃 [Sprints](docs/sprints/) - Planning
+- 🐛 [Issues](https://github.com/geda-valentim/transcode-flow/issues)
 
 ---
 
