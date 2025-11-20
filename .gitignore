@@ -86,3 +86,20 @@ vault/
 # Temporary files
 tmp/
 *.tmp
+*_fixed.py
+*_old.py
+*_backup.py
+*_temp.py
+
+# Development/debugging scripts
+test_*.py
+run_test.sh
+apply_*.sh
+verify_*.sh
+fix_*.sh
+init_database.py
+
+# Duplicate trigger scripts (keep only trigger.sh)
+trigger_pipeline*.py
+trigger_pipeline*.sh
+trigger_simple*.py

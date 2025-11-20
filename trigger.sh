@@ -11,13 +11,18 @@ YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m' # No Color
 
-# Configuração
-DB_HOST="localhost"
-DB_PORT="15432"
-DB_USER="transcode_user"
-DB_PASS="CHANGE_ME_STRONG_PASSWORD_123"
-DB_NAME="transcode_db"
-AIRFLOW_URL="http://localhost:18080"
+# Carregar variáveis de ambiente do .env
+if [ -f .env ]; then
+    export $(grep -v '^#' .env | xargs)
+fi
+
+# Configuração (usa variáveis de ambiente ou valores padrão)
+DB_HOST="${DB_HOST:-localhost}"
+DB_PORT="${DB_PORT:-15432}"
+DB_USER="${DB_USER:-transcode_user}"
+DB_PASS="${DB_PASS:-postgres}"
+DB_NAME="${DB_NAME:-transcode_db}"
+AIRFLOW_URL="${AIRFLOW_URL:-http://localhost:18080}"
 
 # Verificar argumentos
 if [ $# -lt 1 ]; then
