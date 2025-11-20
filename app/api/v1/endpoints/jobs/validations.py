@@ -62,7 +62,7 @@ def check_upload_permissions(api_key: APIKey, enable_transcription: bool = False
         check_permission(api_key, "can_transcribe")
 
 
-def validate_and_process_upload(
+async def validate_and_process_upload(
     video_file: UploadFile,
     api_key: APIKey,
 ) -> tuple[bytes, int, ValidationResult]:
@@ -80,8 +80,7 @@ def validate_and_process_upload(
         HTTPException: If validation fails or quotas exceeded
     """
     # Read file content
-    import asyncio
-    file_content = asyncio.run(video_file.read())
+    file_content = await video_file.read()
     file_size = len(file_content)
 
     # Check storage quota

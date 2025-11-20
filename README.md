@@ -520,10 +520,11 @@ MIT License - see [LICENSE](LICENSE) file for details
 
 ## 📞 Contact
 
-**Project Maintainer**: [Your Name]
-**Email**: your.email@example.com
-**LinkedIn**: [linkedin.com/in/yourprofile](https://linkedin.com/in/yourprofile)
-**Portfolio**: [yourportfolio.com](https://yourportfolio.com)
+**Project Author**: Gedalias Valentim
+**Title**: Data Engineer Mid-Senior | Senior PHP Developer | Python (Dev & AI & Data) | SQL Specialist
+**Email**: gedalias@gmail.com
+**LinkedIn**: [linkedin.com/in/gedalias-valentim-a99b4410](https://www.linkedin.com/in/gedalias-valentim-a99b4410/)
+**Portfolio**: [geda.ingestify.ai](https://geda.ingestify.ai/)
 
 ---
 
