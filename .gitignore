@@ -91,6 +91,9 @@ tmp/
 *_backup.py
 *_temp.py
 
+# Temporary documentation
+docs/tmp/
+
 # Development/debugging scripts
 test_*.py
 run_test.sh

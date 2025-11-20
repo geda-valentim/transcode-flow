@@ -13,15 +13,17 @@ NC='\033[0m' # No Color
 
 # Carregar variáveis de ambiente do .env
 if [ -f .env ]; then
-    export $(grep -v '^#' .env | xargs)
+    set -a
+    source <(grep -v '^#' .env | grep -v '^$' | sed 's/#.*//' | sed 's/[[:space:]]*$//')
+    set +a
 fi
 
-# Configuração (usa variáveis de ambiente ou valores padrão)
-DB_HOST="${DB_HOST:-localhost}"
-DB_PORT="${DB_PORT:-15432}"
-DB_USER="${DB_USER:-transcode_user}"
-DB_PASS="${DB_PASS:-postgres}"
-DB_NAME="${DB_NAME:-transcode_db}"
+# Configuração (usa variáveis de ambiente do .env ou valores padrão)
+DB_HOST="${POSTGRES_HOST:-localhost}"
+DB_PORT="${POSTGRES_EXTERNAL_PORT:-15432}"
+DB_USER="${POSTGRES_USER:-postgres}"
+DB_PASS="${POSTGRES_PASSWORD:-postgres}"
+DB_NAME="${POSTGRES_DB:-transcode_db}"
 AIRFLOW_URL="${AIRFLOW_URL:-http://localhost:18080}"
 
 # Verificar argumentos
