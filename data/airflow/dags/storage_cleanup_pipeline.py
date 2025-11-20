@@ -11,7 +11,7 @@ Automated cleanup DAG that runs daily to:
 - Generate cleanup reports
 """
 from airflow import DAG
-from airflow.operators.python import PythonOperator
+from airflow.providers.standard.operators.python import PythonOperator
 from datetime import datetime, timedelta
 import sys
 import logging
@@ -39,18 +39,6 @@ default_args = {
     'retries': 2,
     'retry_delay': timedelta(minutes=5),
 }
-
-dag = DAG(
-    'storage_cleanup_pipeline',
-    default_args=default_args,
-    description='Automated storage cleanup and maintenance',
-    schedule='0 2 * * *',  # Run daily at 2 AM (changed from schedule_interval in Airflow 3)
-    start_date=datetime(2025, 1, 1),
-    catchup=False,
-    tags=['storage', 'cleanup', 'maintenance'],
-    max_active_runs=1,
-)
-
 
 # ============================================================================
 # HELPER FUNCTIONS
@@ -301,52 +289,58 @@ def generate_cleanup_report_task(**context):
     logger.info("Cleanup report generated")
 
 
-# ============================================================================
-# TASK DEFINITIONS
-# ============================================================================
+with DAG(
+    'storage_cleanup_pipeline',
+    default_args=default_args,
+    description='Automated storage cleanup and maintenance',
+    schedule='0 2 * * *',  # Run daily at 2 AM (changed from schedule_interval in Airflow 3)
+    start_date=datetime(2025, 1, 1),
+    catchup=False,
+    tags=['storage', 'cleanup', 'maintenance'],
+    max_active_runs=1,
+) as dag:
 
-# Task 1: Cleanup temporary files
-cleanup_temp_files = PythonOperator(
-    task_id='cleanup_temp_files',
-    python_callable=cleanup_temp_files_task,
-    dag=dag,
-)
+    # ============================================================================
+    # TASK DEFINITIONS
+    # ============================================================================
 
-# Task 2: Cleanup failed jobs
-cleanup_failed_jobs = PythonOperator(
-    task_id='cleanup_failed_jobs',
-    python_callable=cleanup_failed_jobs_task,
-    dag=dag,
-)
+    # Task 1: Cleanup temporary files
+    cleanup_temp_files = PythonOperator(
+        task_id='cleanup_temp_files',
+        python_callable=cleanup_temp_files_task,
+    )
 
-# Task 3: Cleanup old thumbnails
-cleanup_old_thumbnails = PythonOperator(
-    task_id='cleanup_old_thumbnails',
-    python_callable=cleanup_old_thumbnails_task,
-    dag=dag,
-)
+    # Task 2: Cleanup failed jobs
+    cleanup_failed_jobs = PythonOperator(
+        task_id='cleanup_failed_jobs',
+        python_callable=cleanup_failed_jobs_task,
+    )
 
-# Task 4: Scan for duplicates
-scan_for_duplicates = PythonOperator(
-    task_id='scan_for_duplicates',
-    python_callable=scan_for_duplicates_task,
-    dag=dag,
-)
+    # Task 3: Cleanup old thumbnails
+    cleanup_old_thumbnails = PythonOperator(
+        task_id='cleanup_old_thumbnails',
+        python_callable=cleanup_old_thumbnails_task,
+    )
 
-# Task 5: Generate cleanup report
-generate_cleanup_report = PythonOperator(
-    task_id='generate_cleanup_report',
-    python_callable=generate_cleanup_report_task,
-    dag=dag,
-)
+    # Task 4: Scan for duplicates
+    scan_for_duplicates = PythonOperator(
+        task_id='scan_for_duplicates',
+        python_callable=scan_for_duplicates_task,
+    )
+
+    # Task 5: Generate cleanup report
+    generate_cleanup_report = PythonOperator(
+        task_id='generate_cleanup_report',
+        python_callable=generate_cleanup_report_task,
+    )
 
 
-# ============================================================================
-# TASK DEPENDENCIES
-# ============================================================================
+    # ============================================================================
+    # TASK DEPENDENCIES
+    # ============================================================================
 
-# Run cleanup tasks in parallel
-[cleanup_temp_files, cleanup_failed_jobs, cleanup_old_thumbnails] >> scan_for_duplicates
+    # Run cleanup tasks in parallel
+    [cleanup_temp_files, cleanup_failed_jobs, cleanup_old_thumbnails] >> scan_for_duplicates
 
-# Generate report after all tasks complete
-scan_for_duplicates >> generate_cleanup_report
+    # Generate report after all tasks complete
+    scan_for_duplicates >> generate_cleanup_report

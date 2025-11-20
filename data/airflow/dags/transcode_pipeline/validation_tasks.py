@@ -20,18 +20,40 @@ def validate_video_task(**context):
     - Updates job status to PROCESSING
     - Stores video metadata in database
     """
+    from datetime import datetime, timezone
+    from pathlib import Path
     from app.db import SessionLocal
     from app.models.job import Job, JobStatus
     from app.services.video_validator import VideoValidator
 
     job_id = context['dag_run'].conf.get('job_id')
+    video_path = context['dag_run'].conf.get('video_path')
+
+    # Translate host path to container path if needed
+    # Host: /home/transcode-flow/data/temp/ -> Container: /data/temp/
+    if video_path.startswith('/home/transcode-flow/data/temp/'):
+        container_path = video_path.replace('/home/transcode-flow/data/temp/', '/data/temp/')
+        logger.info(f"[Task 1] Translated path: {video_path} -> {container_path}")
+        video_path = container_path
+
     logger.info(f"[Task 1] Validating video for job {job_id}")
 
     db = SessionLocal()
     try:
         job = db.query(Job).filter(Job.job_id == job_id).first()
         if not job:
-            raise ValueError(f"Job {job_id} not found")
+            # Create job if it doesn't exist (DAG creates job automatically)
+            logger.info(f"[Task 1] Creating job {job_id} in database")
+            job = Job(
+                job_id=job_id,
+                source_path=video_path,
+                source_filename=Path(video_path).name,
+                status=JobStatus.PENDING,
+                created_at=datetime.now(timezone.utc)
+            )
+            db.add(job)
+            db.commit()
+            db.refresh(job)
 
         # Update status to processing
         job.status = JobStatus.PROCESSING
@@ -65,7 +87,7 @@ def validate_video_task(**context):
 
     except Exception as e:
         logger.error(f"[Task 1] Validation failed: {e}")
-        if 'job' in locals():
+        if 'job' in locals() and job is not None:
             job.status = JobStatus.FAILED
             job.error_message = str(e)
             db.commit()

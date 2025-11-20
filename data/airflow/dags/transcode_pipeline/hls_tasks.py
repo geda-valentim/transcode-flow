@@ -41,8 +41,11 @@ def prepare_hls_task(**context):
         if not job:
             raise ValueError(f"Job {job_id} not found")
 
+        # Determine source task based on resolution
+        source_task = f'transcode_{resolution}'
+
         # Get input video path from XCom
-        input_path = context['task_instance'].xcom_pull(key=input_path_key)
+        input_path = context['task_instance'].xcom_pull(key=input_path_key, task_ids=source_task)
         if not input_path or not os.path.exists(input_path):
             raise ValueError(f"Input video not found: {input_path}")
 
