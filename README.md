@@ -31,42 +31,42 @@ This project demonstrates how **modern data engineering principles** can revolut
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                         CLIENT LAYER                                 │
-│  REST API • Server-Sent Events • HLS Streaming • Webhook Callbacks  │
+│                         CLIENT LAYER                                │
+│  REST API • Server-Sent Events • HLS Streaming • Webhook Callbacks │
 └──────────────────────────────┬──────────────────────────────────────┘
                                │
 ┌──────────────────────────────▼──────────────────────────────────────┐
-│                    INGESTION & ORCHESTRATION                         │
-│  ┌─────────────┐    ┌──────────────┐    ┌─────────────────────┐   │
-│  │   FastAPI   │───▶│   Airflow    │───▶│  Celery Workers     │   │
-│  │  (Gateway)  │    │ (Scheduler)  │    │  (Executors)        │   │
-│  └─────────────┘    └──────────────┘    └─────────────────────┘   │
+│                    INGESTION & ORCHESTRATION                        │
+│  ┌─────────────┐    ┌──────────────┐    ┌─────────────────────┐  │
+│  │   FastAPI   │───>│   Airflow    │───>│  Celery Workers     │  │
+│  │  (Gateway)  │    │ (Scheduler)  │    │  (Executors)        │  │
+│  └─────────────┘    └──────────────┘    └─────────────────────┘  │
 └─────────────────────────────────────────────────────────────────────┘
                                │
 ┌──────────────────────────────▼──────────────────────────────────────┐
-│                      PROCESSING PIPELINE                             │
-│  ┌──────────┐  ┌───────────┐  ┌──────────┐  ┌─────────────────┐   │
-│  │ Validate │─▶│ Transcode │─▶│   HLS    │─▶│  Upload to S3   │   │
-│  │  Video   │  │ (360p/720p)│  │ Segment  │  │    (MinIO)      │   │
-│  └──────────┘  └───────────┘  └──────────┘  └─────────────────┘   │
-│                                                                      │
-│  ┌──────────┐  ┌───────────┐  ┌──────────┐                        │
-│  │ Extract  │─▶│Transcribe │─▶│ Generate │                        │
-│  │  Audio   │  │ (Whisper) │  │Thumbnails│                        │
-│  └──────────┘  └───────────┘  └──────────┘                        │
+│                      PROCESSING PIPELINE                            │
+│  ┌──────────┐  ┌───────────┐  ┌──────────┐  ┌─────────────────┐  │
+│  │ Validate │─>│ Transcode │─>│   HLS    │─>│  Upload to S3   │  │
+│  │  Video   │  │ (360p/720p)│  │ Segment  │  │    (MinIO)      │  │
+│  └──────────┘  └───────────┘  └──────────┘  └─────────────────┘  │
+│                                                                     │
+│  ┌──────────┐  ┌───────────┐  ┌──────────┐                       │
+│  │ Extract  │─>│Transcribe │─>│ Generate │                       │
+│  │  Audio   │  │ (Whisper) │  │Thumbnails│                       │
+│  └──────────┘  └───────────┘  └──────────┘                       │
 └─────────────────────────────────────────────────────────────────────┘
                                │
 ┌──────────────────────────────▼──────────────────────────────────────┐
-│                      STORAGE & STATE LAYER                           │
-│  ┌─────────────┐  ┌──────────┐  ┌───────────────────────────────┐ │
-│  │ PostgreSQL  │  │  Redis   │  │         MinIO (S3)            │ │
-│  │  (Metadata) │  │ (Cache)  │  │  raw/ • processed/ • hls/     │ │
-│  └─────────────┘  └──────────┘  └───────────────────────────────┘ │
+│                      STORAGE & STATE LAYER                          │
+│  ┌─────────────┐  ┌──────────┐  ┌───────────────────────────────┐│
+│  │ PostgreSQL  │  │  Redis   │  │         MinIO (S3)            ││
+│  │  (Metadata) │  │ (Cache)  │  │  raw/ • processed/ • hls/     ││
+│  └─────────────┘  └──────────┘  └───────────────────────────────┘│
 └─────────────────────────────────────────────────────────────────────┘
                                │
 ┌──────────────────────────────▼──────────────────────────────────────┐
-│                 OBSERVABILITY & MONITORING                           │
-│  Prometheus • Grafana • Alertmanager • Flower • Structured Logs    │
+│                 OBSERVABILITY & MONITORING                          │
+│  Prometheus • Grafana • Alertmanager • Flower • Structured Logs   │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
