@@ -117,9 +117,11 @@ with DAG(
     )
 
     # Task 6b: Transcribe audio using Whisper (Sprint 3)
+    # Note: Increased execution_timeout for long audio transcriptions
     transcribe_audio = PythonOperator(
         task_id='transcribe_audio',
         python_callable=transcribe_audio_task,
+        execution_timeout=timedelta(hours=2),  # Allow up to 2 hours for long videos
     )
 
     # Task 7: Prepare HLS segments for 360p

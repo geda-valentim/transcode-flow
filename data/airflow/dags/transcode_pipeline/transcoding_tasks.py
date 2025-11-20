@@ -7,6 +7,7 @@ import os
 import logging
 import subprocess
 from pathlib import Path
+from datetime import datetime, timezone
 
 logger = logging.getLogger(__name__)
 
@@ -205,19 +206,60 @@ def transcribe_audio_task(**context):
     - Generates multiple output formats (TXT, SRT, VTT, JSON)
     - Saves to /data/temp/{job_id}/outputs/transcription/
     - Sprint 3: FFmpeg & Whisper Integration
+    - Sends heartbeats to prevent Airflow timeout
     """
     from app.db import SessionLocal
     from app.models.job import Job
     from app.services.whisper_transcriber import WhisperTranscriber
+    import threading
+    import time
 
     job_id = context['dag_run'].conf.get('job_id')
     logger.info(f"[Task 6b] Transcribing audio for job {job_id}")
+
+    # Heartbeat mechanism to keep Airflow task alive during long processing
+    heartbeat_stop = threading.Event()
+
+    def send_heartbeat():
+        """Send periodic heartbeats to Airflow"""
+        counter = 0
+        while not heartbeat_stop.is_set():
+            try:
+                counter += 1
+                logger.info(f"[Task 6b] Heartbeat {counter}: Transcription still running for job {job_id}")
+                time.sleep(30)  # Send heartbeat every 30 seconds
+            except Exception as e:
+                logger.warning(f"[Task 6b] Heartbeat error: {e}")
+                break
+
+    # Start heartbeat thread
+    heartbeat_thread = threading.Thread(target=send_heartbeat, daemon=True)
+    heartbeat_thread.start()
+    logger.info(f"[Task 6b] Started heartbeat thread")
 
     db = SessionLocal()
     try:
         job = db.query(Job).filter(Job.job_id == job_id).first()
         if not job:
             raise ValueError(f"Job {job_id} not found")
+
+        # Check if transcription is enabled for this job
+        if not job.enable_transcription:
+            logger.info(f"[Task 6b] Transcription disabled for job {job_id}, skipping task")
+            heartbeat_stop.set()  # Stop heartbeat before returning
+            return  # Skip transcription
+
+        logger.info(f"[Task 6b] Transcription enabled, proceeding with Whisper processing")
+
+        # Push initial status to XCom for observability
+        context['task_instance'].xcom_push(
+            key='transcription_status',
+            value='initializing'
+        )
+        context['task_instance'].xcom_push(
+            key='transcription_start_time',
+            value=datetime.now(timezone.utc).isoformat()
+        )
 
         # Create output directory for transcription
         output_dir = Path(f"/data/temp/{job_id}/outputs/transcription")
@@ -240,13 +282,35 @@ def transcribe_audio_task(**context):
         ]
 
         logger.info(f"[Task 6b] Extracting audio for transcription: {' '.join(extract_cmd)}")
+
+        # Update XCom status
+        context['task_instance'].xcom_push(
+            key='transcription_status',
+            value='extracting_audio'
+        )
+
         result = subprocess.run(extract_cmd, capture_output=True, text=True)
 
         if result.returncode != 0:
             logger.error(f"FFmpeg audio extraction error: {result.stderr}")
+            context['task_instance'].xcom_push(
+                key='transcription_status',
+                value='failed'
+            )
+            context['task_instance'].xcom_push(
+                key='transcription_error',
+                value=f"Audio extraction failed: {result.stderr[:500]}"
+            )
             raise RuntimeError("Audio extraction for transcription failed")
 
-        logger.info(f"[Task 6b] Audio extracted: {temp_audio}")
+        # Get audio file size for metrics
+        audio_size_mb = temp_audio.stat().st_size / (1024 * 1024)
+        logger.info(f"[Task 6b] Audio extracted: {temp_audio} ({audio_size_mb:.2f} MB)")
+
+        context['task_instance'].xcom_push(
+            key='audio_file_size_mb',
+            value=round(audio_size_mb, 2)
+        )
 
         # Initialize Whisper transcriber
         transcriber = WhisperTranscriber(
@@ -256,8 +320,43 @@ def transcribe_audio_task(**context):
             output_dir=output_dir
         )
 
+        # Select and push model info to XCom
+        selected_model = transcriber.select_model(job.source_duration_seconds or 600)
+        model_specs = transcriber.MODEL_SELECTION.get(selected_model, {})
+
+        context['task_instance'].xcom_push(
+            key='whisper_model_selected',
+            value=selected_model
+        )
+        context['task_instance'].xcom_push(
+            key='whisper_model_speed',
+            value=model_specs.get('speed', 'unknown')
+        )
+        context['task_instance'].xcom_push(
+            key='whisper_model_quality',
+            value=model_specs.get('quality', 'unknown')
+        )
+        context['task_instance'].xcom_push(
+            key='video_duration_seconds',
+            value=job.source_duration_seconds
+        )
+
+        logger.info(
+            f"[Task 6b] Selected Whisper model: {selected_model} "
+            f"(speed: {model_specs.get('speed')}, quality: {model_specs.get('quality')})"
+        )
+
         # Perform transcription
         logger.info(f"[Task 6b] Starting Whisper transcription")
+        context['task_instance'].xcom_push(
+            key='transcription_status',
+            value='transcribing'
+        )
+        context['task_instance'].xcom_push(
+            key='transcription_processing_start',
+            value=datetime.now(timezone.utc).isoformat()
+        )
+
         transcription = transcriber.transcribe(
             audio_path=str(temp_audio),
             duration_seconds=job.source_duration_seconds,
@@ -266,13 +365,53 @@ def transcribe_audio_task(**context):
             word_timestamps=True
         )
 
+        # Calculate processing duration
+        processing_end_time = datetime.now(timezone.utc)
+        processing_start_time_str = context['task_instance'].xcom_pull(
+            task_ids='transcribe_audio',
+            key='transcription_processing_start'
+        )
+        if processing_start_time_str:
+            processing_start_time = datetime.fromisoformat(processing_start_time_str)
+            processing_duration = (processing_end_time - processing_start_time).total_seconds()
+        else:
+            processing_duration = 0
+
         logger.info(
             f"[Task 6b] Transcription completed: "
             f"language={transcription.language}, "
-            f"text_length={len(transcription.text)} chars"
+            f"text_length={len(transcription.text)} chars, "
+            f"processing_time={processing_duration:.1f}s, "
+            f"segments={len(transcription.segments)}"
         )
 
-        # Store transcription metadata in XCom
+        # Push comprehensive metrics to XCom
+        context['task_instance'].xcom_push(
+            key='transcription_status',
+            value='completed'
+        )
+        context['task_instance'].xcom_push(
+            key='transcription_processing_end',
+            value=processing_end_time.isoformat()
+        )
+        context['task_instance'].xcom_push(
+            key='transcription_processing_duration_seconds',
+            value=round(processing_duration, 2)
+        )
+        context['task_instance'].xcom_push(
+            key='transcription_text_length',
+            value=len(transcription.text)
+        )
+        context['task_instance'].xcom_push(
+            key='transcription_segments_count',
+            value=len(transcription.segments)
+        )
+        context['task_instance'].xcom_push(
+            key='transcription_detected_language',
+            value=transcription.language
+        )
+
+        # Store transcription metadata in XCom (backward compatibility)
         context['task_instance'].xcom_push(key='transcription_text', value=transcription.text)
         context['task_instance'].xcom_push(key='transcription_language', value=transcription.language)
         context['task_instance'].xcom_push(key='transcription_dir', value=str(output_dir))
@@ -297,4 +436,7 @@ def transcribe_audio_task(**context):
         logger.error(f"[Task 6b] Audio transcription failed: {e}")
         raise
     finally:
+        # Stop heartbeat thread
+        heartbeat_stop.set()
+        logger.info(f"[Task 6b] Stopped heartbeat thread")
         db.close()
