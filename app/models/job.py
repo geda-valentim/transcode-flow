@@ -41,8 +41,8 @@ class Job(Base):
     # Primary Key
     id = Column(Integer, primary_key=True, autoincrement=True)
 
-    # Foreign Key
-    api_key_id = Column(Integer, nullable=False, index=True)
+    # Foreign Key to api_keys table
+    api_key_id = Column(Integer, nullable=True, index=True)
 
     # Job Identification
     job_id = Column(String(36), unique=True, nullable=False, index=True)
@@ -94,7 +94,7 @@ class Job(Base):
     retry_count = Column(Integer, default=0, nullable=False)
 
     # Metadata & Webhooks
-    metadata = Column(JSONB, nullable=True)  # Flexible JSON storage
+    job_metadata = Column(JSONB, nullable=True)  # Flexible JSON storage
     webhook_url = Column(String(2048), nullable=True)
     webhook_sent = Column(Boolean, default=False, nullable=False)
 

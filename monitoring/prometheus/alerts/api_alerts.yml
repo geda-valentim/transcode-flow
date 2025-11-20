@@ -1,0 +1,243 @@
+groups:
+  - name: api_performance_alerts
+    interval: 30s
+    rules:
+      # High API Error Rate
+      - alert: HighAPIErrorRate
+        expr: |
+          (
+            sum(rate(api_requests_total{status=~"5.."}[5m]))
+            /
+            sum(rate(api_requests_total[5m]))
+          ) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          component: api
+        annotations:
+          summary: "High API error rate detected"
+          description: "API error rate is {{ $value | humanizePercentage }}. More than 5% of requests are failing with 5xx errors."
+
+      # Critical API Error Rate
+      - alert: CriticalAPIErrorRate
+        expr: |
+          (
+            sum(rate(api_requests_total{status=~"5.."}[5m]))
+            /
+            sum(rate(api_requests_total[5m]))
+          ) > 0.20
+        for: 2m
+        labels:
+          severity: critical
+          component: api
+        annotations:
+          summary: "Critical API error rate"
+          description: "API error rate is {{ $value | humanizePercentage }}. More than 20% of requests are failing!"
+
+      # High API Latency (p95)
+      - alert: HighAPILatencyP95
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(api_request_duration_seconds_bucket[5m])) by (le, endpoint)
+          ) > 2.0
+        for: 10m
+        labels:
+          severity: warning
+          component: api
+        annotations:
+          summary: "High API latency on {{ $labels.endpoint }}"
+          description: "95th percentile latency is {{ $value }}s on {{ $labels.endpoint }}. Requests are taking longer than 2 seconds."
+
+      # Critical API Latency (p95)
+      - alert: CriticalAPILatencyP95
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(api_request_duration_seconds_bucket[5m])) by (le, endpoint)
+          ) > 10.0
+        for: 5m
+        labels:
+          severity: critical
+          component: api
+        annotations:
+          summary: "Critical API latency on {{ $labels.endpoint }}"
+          description: "95th percentile latency is {{ $value }}s on {{ $labels.endpoint }}. Requests are taking longer than 10 seconds!"
+
+      # High API Latency (p99)
+      - alert: HighAPILatencyP99
+        expr: |
+          histogram_quantile(0.99,
+            sum(rate(api_request_duration_seconds_bucket[5m])) by (le, endpoint)
+          ) > 5.0
+        for: 10m
+        labels:
+          severity: warning
+          component: api
+        annotations:
+          summary: "High API p99 latency on {{ $labels.endpoint }}"
+          description: "99th percentile latency is {{ $value }}s on {{ $labels.endpoint }}."
+
+      # API Endpoint Down (High 5xx Rate)
+      - alert: APIEndpointDown
+        expr: |
+          (
+            sum(rate(api_requests_total{status=~"5.."}[5m])) by (endpoint)
+            /
+            sum(rate(api_requests_total[5m])) by (endpoint)
+          ) > 0.90
+        for: 2m
+        labels:
+          severity: critical
+          component: api
+        annotations:
+          summary: "API endpoint {{ $labels.endpoint }} is down"
+          description: "More than 90% of requests to {{ $labels.endpoint }} are failing with 5xx errors."
+
+      # High 4xx Error Rate (Client Errors)
+      - alert: High4xxErrorRate
+        expr: |
+          (
+            sum(rate(api_requests_total{status=~"4.."}[10m]))
+            /
+            sum(rate(api_requests_total[10m]))
+          ) > 0.20
+        for: 10m
+        labels:
+          severity: warning
+          component: api
+        annotations:
+          summary: "High rate of 4xx client errors"
+          description: "{{ $value | humanizePercentage }} of requests are returning 4xx errors. Check API documentation or client implementations."
+
+      # High Request Rate Spike
+      - alert: HighRequestRateSpike
+        expr: |
+          (
+            sum(rate(api_requests_total[1m]))
+            /
+            sum(rate(api_requests_total[1h] offset 1h))
+          ) > 5.0
+        for: 5m
+        labels:
+          severity: warning
+          component: api
+        annotations:
+          summary: "Sudden spike in API request rate"
+          description: "Request rate is {{ $value }}x higher than normal. Possible DDoS or traffic surge."
+
+      # Too Many In-Progress Requests
+      - alert: TooManyInProgressRequests
+        expr: sum(api_requests_in_progress) > 100
+        for: 5m
+        labels:
+          severity: warning
+          component: api
+        annotations:
+          summary: "Too many concurrent API requests"
+          description: "{{ $value }} requests are currently being processed. Server may be overloaded."
+
+      # API Rate Limit Abuse
+      - alert: APIRateLimitExceeded
+        expr: rate(api_key_rate_limit_exceeded[5m]) > 10
+        for: 5m
+        labels:
+          severity: warning
+          component: api
+        annotations:
+          summary: "High rate of rate limit violations"
+          description: "{{ $value }} requests per second are being rate limited. Possible API abuse."
+
+      # API Quota Exceeded Frequently
+      - alert: APIQuotaExceededFrequently
+        expr: rate(api_key_quota_exceeded[1h]) > 5
+        for: 30m
+        labels:
+          severity: info
+          component: api
+        annotations:
+          summary: "API quotas are being exceeded frequently"
+          description: "{{ $value }} quota exceeded events per second. Users may need quota increases."
+
+      # Webhook Delivery Failures
+      - alert: WebhookDeliveryFailures
+        expr: |
+          (
+            rate(webhook_sent_total{status="failure"}[10m])
+            /
+            rate(webhook_sent_total[10m])
+          ) > 0.20
+        for: 10m
+        labels:
+          severity: warning
+          component: webhooks
+        annotations:
+          summary: "High webhook delivery failure rate"
+          description: "{{ $value | humanizePercentage }} of webhooks are failing to deliver. Check webhook endpoints."
+
+      # Webhook Retry Storm
+      - alert: WebhookRetryStorm
+        expr: rate(webhook_retry_count[5m]) > 10
+        for: 5m
+        labels:
+          severity: warning
+          component: webhooks
+        annotations:
+          summary: "High webhook retry rate"
+          description: "Webhooks are being retried at {{ $value }} per second. Downstream services may be down."
+
+      # Storage Operations Slow
+      - alert: StorageOperationsSlow
+        expr: |
+          histogram_quantile(0.95,
+            rate(storage_operation_duration_seconds_bucket[10m])
+          ) > 5.0
+        for: 10m
+        labels:
+          severity: warning
+          component: storage
+        annotations:
+          summary: "Storage operations are slow"
+          description: "95th percentile storage operation duration is {{ $value }}s. MinIO may be overloaded."
+
+      # Cache Miss Rate High
+      - alert: CacheMissRateHigh
+        expr: |
+          (
+            rate(cache_operations_total{operation="miss"}[10m])
+            /
+            rate(cache_operations_total{operation=~"hit|miss"}[10m])
+          ) > 0.50
+        for: 15m
+        labels:
+          severity: warning
+          component: cache
+        annotations:
+          summary: "High cache miss rate"
+          description: "Cache miss rate is {{ $value | humanizePercentage }}. Cache may need tuning or more memory."
+
+      # Video Transcoding Taking Too Long
+      - alert: VideoTranscodingTooLong
+        expr: |
+          histogram_quantile(0.95,
+            rate(video_transcode_duration_seconds_bucket[30m])
+          ) > 1800
+        for: 30m
+        labels:
+          severity: warning
+          component: video_processing
+        annotations:
+          summary: "Video transcoding is taking too long"
+          description: "95th percentile transcode time is {{ $value | humanizeDuration }}. Check CPU/GPU resources."
+
+      # Transcription Service Slow
+      - alert: TranscriptionServiceSlow
+        expr: |
+          histogram_quantile(0.95,
+            rate(transcription_duration_seconds_bucket[30m])
+          ) > 600
+        for: 30m
+        labels:
+          severity: warning
+          component: transcription
+        annotations:
+          summary: "Transcription service is slow"
+          description: "95th percentile transcription time is {{ $value | humanizeDuration }}. Whisper model may need optimization."

@@ -70,8 +70,32 @@ class APIKey(Base):
     # Expiration
     expires_at = Column(DateTime(timezone=True), nullable=True)
 
+    # IP Filtering
+    ip_whitelist = Column(JSONB, nullable=True, default=None)  # List of allowed IPs
+    ip_blacklist = Column(JSONB, nullable=True, default=None)  # List of blocked IPs
+
+    # Scopes (fine-grained permissions)
+    scopes = Column(
+        JSONB,
+        nullable=False,
+        default=[
+            "jobs:create",
+            "jobs:read",
+            "jobs:list",
+            "streaming:generate_token",
+        ],
+    )
+
+    # Master/Sub-key hierarchy
+    parent_key_id = Column(Integer, nullable=True, index=True)  # Reference to parent key
+    is_master_key = Column(Boolean, default=False, nullable=False)
+
+    # Rotation tracking
+    rotated_from_key_id = Column(Integer, nullable=True)  # Previous key in rotation chain
+    rotation_scheduled_at = Column(DateTime(timezone=True), nullable=True)
+
     # Metadata
-    metadata = Column(JSONB, nullable=True)
+    key_metadata = Column(JSONB, nullable=True)
     notes = Column(String(2048), nullable=True)
 
     # Timestamps
@@ -143,3 +167,45 @@ class APIKey(Base):
     def has_jobs_quota(self) -> bool:
         """Check if there are remaining jobs in monthly quota."""
         return self.jobs_used_monthly < self.jobs_quota_monthly
+
+    def is_ip_allowed(self, client_ip: str) -> bool:
+        """Check if an IP address is allowed to use this API key."""
+        # If blacklist exists and IP is in it, deny
+        if self.ip_blacklist and client_ip in self.ip_blacklist:
+            return False
+
+        # If whitelist exists, only allow IPs in the whitelist
+        if self.ip_whitelist:
+            return client_ip in self.ip_whitelist
+
+        # No restrictions, allow all
+        return True
+
+    def has_scope(self, required_scope: str) -> bool:
+        """Check if API key has a specific scope."""
+        if not self.scopes:
+            return False
+        return required_scope in self.scopes
+
+    def has_any_scope(self, required_scopes: list[str]) -> bool:
+        """Check if API key has any of the required scopes."""
+        if not self.scopes:
+            return False
+        return any(scope in self.scopes for scope in required_scopes)
+
+    def has_all_scopes(self, required_scopes: list[str]) -> bool:
+        """Check if API key has all of the required scopes."""
+        if not self.scopes:
+            return False
+        return all(scope in self.scopes for scope in required_scopes)
+
+    def is_sub_key(self) -> bool:
+        """Check if this is a sub-key (has a parent)."""
+        return self.parent_key_id is not None
+
+    def needs_rotation(self) -> bool:
+        """Check if key needs rotation based on scheduled rotation date."""
+        if self.rotation_scheduled_at is None:
+            return False
+        from datetime import datetime, timezone
+        return datetime.now(timezone.utc) >= self.rotation_scheduled_at

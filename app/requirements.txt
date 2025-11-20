@@ -19,11 +19,13 @@ boto3==1.29.7
 
 # Authentication
 python-jose[cryptography]==3.3.0
+PyJWT==2.8.0
 passlib[bcrypt]==1.7.4
 python-dotenv==1.0.0
 
 # Video Processing
 ffmpeg-python==0.2.0
+openai-whisper==20231117
 
 # Monitoring
 prometheus-client==0.19.0

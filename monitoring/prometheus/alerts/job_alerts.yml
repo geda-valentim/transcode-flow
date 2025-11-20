@@ -1,0 +1,157 @@
+groups:
+  - name: job_processing_alerts
+    interval: 30s
+    rules:
+      # Job Failure Rate Alert
+      - alert: JobFailureRateHigh
+        expr: |
+          (
+            rate(jobs_failed_total[5m])
+            /
+            (rate(jobs_completed_total[5m]) + rate(jobs_failed_total[5m]))
+          ) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          component: job_processor
+        annotations:
+          summary: "High job failure rate detected"
+          description: "Job failure rate is {{ $value | humanizePercentage }} over the last 5 minutes. More than 10% of jobs are failing."
+
+      # Critical Job Failure Rate
+      - alert: JobFailureRateCritical
+        expr: |
+          (
+            rate(jobs_failed_total[5m])
+            /
+            (rate(jobs_completed_total[5m]) + rate(jobs_failed_total[5m]))
+          ) > 0.25
+        for: 2m
+        labels:
+          severity: critical
+          component: job_processor
+        annotations:
+          summary: "Critical job failure rate detected"
+          description: "Job failure rate is {{ $value | humanizePercentage }} over the last 5 minutes. More than 25% of jobs are failing!"
+
+      # Job Queue Backlog
+      - alert: JobQueueBacklog
+        expr: jobs_queued > 100
+        for: 10m
+        labels:
+          severity: warning
+          component: job_queue
+        annotations:
+          summary: "Job queue backlog is growing"
+          description: "There are {{ $value }} jobs in the queue waiting to be processed for more than 10 minutes."
+
+      # Critical Job Queue Backlog
+      - alert: JobQueueBacklogCritical
+        expr: jobs_queued > 500
+        for: 5m
+        labels:
+          severity: critical
+          component: job_queue
+        annotations:
+          summary: "Critical job queue backlog"
+          description: "There are {{ $value }} jobs in the queue. Queue is severely backed up!"
+
+      # Job Processing Time Long (p95)
+      - alert: JobProcessingTimeLong
+        expr: |
+          histogram_quantile(0.95,
+            rate(job_processing_duration_seconds_bucket[10m])
+          ) > 3600
+        for: 15m
+        labels:
+          severity: warning
+          component: job_processor
+        annotations:
+          summary: "Job processing time is too long"
+          description: "95th percentile job processing time is {{ $value | humanizeDuration }}. Jobs are taking longer than 1 hour to complete."
+
+      # Jobs Stuck in Processing
+      - alert: JobStuckInProcessing
+        expr: |
+          jobs_processing > 0
+          and
+          rate(jobs_completed_total[30m]) == 0
+          and
+          rate(jobs_failed_total[30m]) == 0
+        for: 30m
+        labels:
+          severity: critical
+          component: job_processor
+        annotations:
+          summary: "Jobs appear to be stuck in processing state"
+          description: "{{ $value }} jobs are in processing state, but no jobs have completed or failed in the last 30 minutes."
+
+      # No Jobs Being Processed (but jobs in queue)
+      - alert: NoJobsBeingProcessed
+        expr: jobs_queued > 0 and jobs_processing == 0
+        for: 15m
+        labels:
+          severity: warning
+          component: job_processor
+        annotations:
+          summary: "Jobs in queue but none being processed"
+          description: "There are {{ $value }} jobs queued, but no jobs are currently being processed. Worker may be down."
+
+      # Job Queue Wait Time Long
+      - alert: JobQueueWaitTimeLong
+        expr: |
+          histogram_quantile(0.95,
+            rate(job_queue_time_seconds_bucket[10m])
+          ) > 600
+        for: 10m
+        labels:
+          severity: warning
+          component: job_queue
+        annotations:
+          summary: "Job queue wait time is too long"
+          description: "95th percentile queue wait time is {{ $value | humanizeDuration }}. Jobs are waiting more than 10 minutes before processing starts."
+
+      # High Job Retry Rate
+      - alert: HighJobRetryRate
+        expr: rate(job_retry_count[10m]) > 0.5
+        for: 10m
+        labels:
+          severity: warning
+          component: job_processor
+        annotations:
+          summary: "High job retry rate detected"
+          description: "Jobs are being retried at a rate of {{ $value }} per second. This may indicate transient failures."
+
+      # Celery Workers Down
+      - alert: CeleryWorkersDown
+        expr: celery_workers_active == 0
+        for: 2m
+        labels:
+          severity: critical
+          component: celery
+        annotations:
+          summary: "No active Celery workers"
+          description: "All Celery workers are down. Jobs cannot be processed!"
+
+      # Low Celery Worker Count
+      - alert: LowCeleryWorkerCount
+        expr: celery_workers_active < 2
+        for: 5m
+        labels:
+          severity: warning
+          component: celery
+        annotations:
+          summary: "Low Celery worker count"
+          description: "Only {{ $value }} Celery workers are active. Job processing capacity is reduced."
+
+      # Celery Queue Length Growing
+      - alert: CeleryQueueLengthGrowing
+        expr: |
+          deriv(celery_queue_length[15m]) > 0.5
+        for: 10m
+        labels:
+          severity: warning
+          component: celery
+        annotations:
+          summary: "Celery queue length is growing"
+          description: "Celery queue is growing at a rate of {{ $value }} tasks per minute. Workers may not be keeping up with demand."

@@ -1,0 +1,9 @@
+# MinIO / S3
+minio>=7.2.0
+
+# Video Processing
+ffmpeg-python>=0.2.0
+openai-whisper>=20231117
+
+# Pydantic
+pydantic-settings>=2.0.0

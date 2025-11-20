@@ -1,0 +1,137 @@
+global:
+  scrape_interval: 15s # Set the scrape interval to every 15 seconds
+  evaluation_interval: 30s # Evaluate alert rules every 30 seconds
+  scrape_timeout: 10s # Timeout when scraping targets
+
+  external_labels:
+    cluster: 'transcode-flow'
+    environment: 'production'
+
+# Alertmanager configuration
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - alertmanager:9093
+
+# Load rules once and periodically evaluate them
+rule_files:
+  - '/etc/prometheus/alerts/*.yml'
+
+# Scrape configurations
+scrape_configs:
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+        labels:
+          service: 'prometheus'
+
+  # FastAPI Application
+  - job_name: 'fastapi'
+    scrape_interval: 15s
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['fastapi:8000']
+        labels:
+          service: 'fastapi'
+          app: 'transcode-flow-api'
+    # Health check endpoint
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: 'up|api_.*|job_.*|video_.*|storage_.*|webhook_.*|db_.*|cache_.*|celery_.*|api_key_.*|app_.*'
+        action: keep
+
+  # PostgreSQL Exporter
+  - job_name: 'postgresql'
+    scrape_interval: 30s
+    static_configs:
+      - targets: ['postgres-exporter:9187']
+        labels:
+          service: 'postgresql'
+          database: 'airflow'
+
+  # Redis Exporter
+  - job_name: 'redis'
+    scrape_interval: 30s
+    static_configs:
+      - targets: ['redis-exporter:9121']
+        labels:
+          service: 'redis'
+          role: 'celery-broker'
+
+  # MinIO Metrics
+  - job_name: 'minio'
+    bearer_token: MINIO_PROMETHEUS_TOKEN
+    scrape_interval: 30s
+    metrics_path: /minio/v2/metrics/cluster
+    scheme: http
+    static_configs:
+      - targets: ['minio:9000']
+        labels:
+          service: 'minio'
+          storage: 's3-compatible'
+
+  # Node Exporter (System metrics)
+  - job_name: 'node'
+    scrape_interval: 30s
+    static_configs:
+      - targets: ['node-exporter:9100']
+        labels:
+          service: 'node-exporter'
+          instance: 'transcode-host'
+
+  # Cadvisor (Container metrics)
+  - job_name: 'cadvisor'
+    scrape_interval: 30s
+    static_configs:
+      - targets: ['cadvisor:8080']
+        labels:
+          service: 'cadvisor'
+    # Filter to include only necessary container metrics
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: 'container_(cpu|memory|network|fs).*'
+        action: keep
+
+  # Airflow Scheduler Metrics (StatsD exporter)
+  - job_name: 'airflow-scheduler'
+    scrape_interval: 30s
+    static_configs:
+      - targets: ['statsd-exporter:9102']
+        labels:
+          service: 'airflow-scheduler'
+          component: 'scheduler'
+
+  # Airflow Webserver
+  - job_name: 'airflow-webserver'
+    scrape_interval: 30s
+    metrics_path: '/health'
+    static_configs:
+      - targets: ['airflow-webserver:8080']
+        labels:
+          service: 'airflow-webserver'
+          component: 'webserver'
+
+  # Celery Worker Metrics (via Flower or custom exporter)
+  - job_name: 'celery-workers'
+    scrape_interval: 30s
+    static_configs:
+      - targets: ['fastapi:8000']  # Celery metrics exposed via FastAPI
+        labels:
+          service: 'celery'
+          component: 'worker'
+    metric_relabel_configs:
+      - source_labels: [__name__]
+        regex: 'celery_.*'
+        action: keep
+
+# Service discovery configuration for dynamic targets (optional)
+# Uncomment if using Kubernetes or Consul
+# - job_name: 'kubernetes-pods'
+#   kubernetes_sd_configs:
+#     - role: pod
+#   relabel_configs:
+#     - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+#       action: keep
+#       regex: true

@@ -1,0 +1,231 @@
+global:
+  # Default SMTP configuration
+  smtp_from: 'alertmanager@transcode-flow.local'
+  smtp_smarthost: 'localhost:25'
+  smtp_require_tls: false
+
+  # Slack API URL (replace with your webhook URL)
+  slack_api_url: 'https://hooks.slack.com/services/YOUR/SLACK/WEBHOOK'
+
+  # How long to wait before sending a notification again
+  resolve_timeout: 5m
+
+# Templates for notifications
+templates:
+  - '/etc/alertmanager/templates/*.tmpl'
+
+# Route tree for notifications
+route:
+  # Default receiver if no match
+  receiver: 'default'
+
+  # Group alerts by these labels
+  group_by: ['alertname', 'cluster', 'service']
+
+  # How long to initially wait to send a notification for a group of alerts
+  group_wait: 30s
+
+  # How long to wait before sending a notification about new alerts added to a group
+  group_interval: 5m
+
+  # How long to wait before sending a notification again
+  repeat_interval: 4h
+
+  # Child routes
+  routes:
+    # Critical alerts go to both email and Slack immediately
+    - match:
+        severity: critical
+      receiver: 'critical-alerts'
+      group_wait: 10s
+      repeat_interval: 1h
+      continue: false
+
+    # Warning alerts go to email only
+    - match:
+        severity: warning
+      receiver: 'warning-alerts'
+      group_wait: 30s
+      repeat_interval: 4h
+      continue: false
+
+    # Info alerts go to Slack only
+    - match:
+        severity: info
+      receiver: 'info-alerts'
+      group_wait: 5m
+      repeat_interval: 12h
+      continue: false
+
+    # Job processing alerts
+    - match_re:
+        component: 'job_.*'
+      receiver: 'job-alerts'
+      group_by: ['alertname', 'job_id']
+      continue: true
+
+    # Database alerts
+    - match:
+        component: database
+      receiver: 'database-alerts'
+      group_wait: 30s
+      repeat_interval: 2h
+      continue: true
+
+    # Storage alerts
+    - match:
+        component: storage
+      receiver: 'storage-alerts'
+      continue: true
+
+    # API alerts
+    - match:
+        component: api
+      receiver: 'api-alerts'
+      continue: true
+
+# Inhibit rules - prevent notifications for certain alerts when others are firing
+inhibit_rules:
+  # Inhibit warning if critical is firing for the same alertname
+  - source_match:
+      severity: 'critical'
+    target_match:
+      severity: 'warning'
+    equal: ['alertname', 'instance']
+
+  # If application is down, don't alert about high error rates
+  - source_match:
+      alertname: 'ApplicationDown'
+    target_match_re:
+      alertname: '(HighAPIErrorRate|APIEndpointDown)'
+    equal: ['instance']
+
+  # If database is down, don't alert about connection pool issues
+  - source_match:
+      alertname: 'PostgreSQLDown'
+    target_match_re:
+      alertname: '(HighDatabaseConnectionUsage|DatabaseConnectionPoolExhausted)'
+    equal: ['instance']
+
+  # If all workers are down, don't alert about job queue
+  - source_match:
+      alertname: 'CeleryWorkersDown'
+    target_match_re:
+      alertname: '(JobQueueBacklog|NoJobsBeingProcessed)'
+
+# Receiver definitions
+receivers:
+  # Default receiver
+  - name: 'default'
+    email_configs:
+      - to: 'ops@example.com'
+        headers:
+          subject: '[Transcode Flow] {{ .GroupLabels.alertname }}'
+        html: '{{ template "email.default.html" . }}'
+    slack_configs:
+      - channel: '#alerts'
+        title: '{{ .GroupLabels.alertname }}'
+        text: '{{ range .Alerts }}{{ .Annotations.description }}{{ end }}'
+        send_resolved: true
+
+  # Critical alerts - email + Slack + PagerDuty
+  - name: 'critical-alerts'
+    email_configs:
+      - to: 'oncall@example.com'
+        headers:
+          subject: '[CRITICAL] Transcode Flow Alert: {{ .GroupLabels.alertname }}'
+          priority: 'urgent'
+        html: '{{ template "email.critical.html" . }}'
+    slack_configs:
+      - channel: '#critical-alerts'
+        color: 'danger'
+        title: ':fire: CRITICAL: {{ .GroupLabels.alertname }}'
+        text: |
+          {{ range .Alerts }}
+          *Alert:* {{ .Labels.alertname }}
+          *Severity:* {{ .Labels.severity }}
+          *Component:* {{ .Labels.component }}
+          *Description:* {{ .Annotations.description }}
+          *Summary:* {{ .Annotations.summary }}
+          {{ end }}
+        send_resolved: true
+        actions:
+          - type: button
+            text: 'View in Prometheus'
+            url: 'http://localhost:19090/alerts'
+          - type: button
+            text: 'View in Grafana'
+            url: 'http://localhost:13000/d/overview/overview'
+
+  # Warning alerts - email only
+  - name: 'warning-alerts'
+    email_configs:
+      - to: 'ops@example.com'
+        headers:
+          subject: '[WARNING] Transcode Flow: {{ .GroupLabels.alertname }}'
+        html: '{{ template "email.warning.html" . }}'
+    slack_configs:
+      - channel: '#warnings'
+        color: 'warning'
+        title: ':warning: Warning: {{ .GroupLabels.alertname }}'
+        text: '{{ range .Alerts }}{{ .Annotations.description }}{{ end }}'
+        send_resolved: true
+
+  # Info alerts - Slack only
+  - name: 'info-alerts'
+    slack_configs:
+      - channel: '#info'
+        color: 'good'
+        title: ':information_source: Info: {{ .GroupLabels.alertname }}'
+        text: '{{ range .Alerts }}{{ .Annotations.description }}{{ end }}'
+        send_resolved: true
+
+  # Job processing alerts
+  - name: 'job-alerts'
+    email_configs:
+      - to: 'ops@example.com'
+        headers:
+          subject: '[Job Alert] {{ .GroupLabels.alertname }}'
+        html: '{{ template "email.job.html" . }}'
+    slack_configs:
+      - channel: '#job-processing'
+        title: ':gear: Job Alert: {{ .GroupLabels.alertname }}'
+        text: '{{ range .Alerts }}{{ .Annotations.description }}{{ end }}'
+        send_resolved: true
+
+  # Database alerts
+  - name: 'database-alerts'
+    email_configs:
+      - to: 'dba@example.com,ops@example.com'
+        headers:
+          subject: '[Database Alert] {{ .GroupLabels.alertname }}'
+    slack_configs:
+      - channel: '#database-alerts'
+        color: '{{ if eq .Status "firing" }}danger{{ else }}good{{ end }}'
+        title: ':database: Database Alert: {{ .GroupLabels.alertname }}'
+        text: '{{ range .Alerts }}{{ .Annotations.description }}{{ end }}'
+        send_resolved: true
+
+  # Storage alerts
+  - name: 'storage-alerts'
+    email_configs:
+      - to: 'ops@example.com'
+        headers:
+          subject: '[Storage Alert] {{ .GroupLabels.alertname }}'
+    slack_configs:
+      - channel: '#storage-alerts'
+        title: ':floppy_disk: Storage Alert: {{ .GroupLabels.alertname }}'
+        text: '{{ range .Alerts }}{{ .Annotations.description }}{{ end }}'
+        send_resolved: true
+
+  # API alerts
+  - name: 'api-alerts'
+    email_configs:
+      - to: 'ops@example.com'
+        headers:
+          subject: '[API Alert] {{ .GroupLabels.alertname }}'
+    slack_configs:
+      - channel: '#api-alerts'
+        title: ':globe_with_meridians: API Alert: {{ .GroupLabels.alertname }}'
+        text: '{{ range .Alerts }}{{ .Annotations.description }}{{ end }}'
+        send_resolved: true

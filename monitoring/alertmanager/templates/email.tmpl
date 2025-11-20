@@ -1,0 +1,212 @@
+{{ define "email.default.html" }}
+<!DOCTYPE html>
+<html>
+<head>
+  <style>
+    body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+    .header { background-color: #f4f4f4; padding: 20px; text-align: center; }
+    .alert { margin: 20px 0; padding: 15px; border-left: 4px solid #ffa500; background-color: #fff3cd; }
+    .alert.critical { border-color: #dc3545; background-color: #f8d7da; }
+    .alert.warning { border-color: #ffc107; background-color: #fff3cd; }
+    .alert.info { border-color: #17a2b8; background-color: #d1ecf1; }
+    .footer { margin-top: 30px; padding-top: 20px; border-top: 1px solid #ddd; font-size: 12px; color: #666; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { text-align: left; padding: 8px; border-bottom: 1px solid #ddd; }
+    th { background-color: #f2f2f2; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h2>Transcode Flow Alerting</h2>
+    <p>Alert Notification</p>
+  </div>
+
+  {{ range .Alerts }}
+  <div class="alert {{ .Labels.severity }}">
+    <h3>{{ .Labels.alertname }}</h3>
+    <p><strong>Status:</strong> {{ .Status }}</p>
+    <p><strong>Severity:</strong> {{ .Labels.severity }}</p>
+    <p><strong>Component:</strong> {{ .Labels.component }}</p>
+    <p><strong>Summary:</strong> {{ .Annotations.summary }}</p>
+    <p><strong>Description:</strong> {{ .Annotations.description }}</p>
+    <p><strong>Started At:</strong> {{ .StartsAt.Format "2006-01-02 15:04:05 MST" }}</p>
+    {{ if .EndsAt }}
+    <p><strong>Ended At:</strong> {{ .EndsAt.Format "2006-01-02 15:04:05 MST" }}</p>
+    {{ end }}
+
+    <h4>Labels:</h4>
+    <table>
+      {{ range .Labels.SortedPairs }}
+      <tr>
+        <th>{{ .Name }}</th>
+        <td>{{ .Value }}</td>
+      </tr>
+      {{ end }}
+    </table>
+  </div>
+  {{ end }}
+
+  <div class="footer">
+    <p>This is an automated alert from Transcode Flow monitoring system.</p>
+    <p><a href="http://localhost:19090/alerts">View in Prometheus</a> | <a href="http://localhost:13000">View in Grafana</a></p>
+  </div>
+</body>
+</html>
+{{ end }}
+
+{{ define "email.critical.html" }}
+<!DOCTYPE html>
+<html>
+<head>
+  <style>
+    body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+    .header { background-color: #dc3545; color: white; padding: 20px; text-align: center; }
+    .alert { margin: 20px 0; padding: 15px; border-left: 4px solid #dc3545; background-color: #f8d7da; }
+    .footer { margin-top: 30px; padding-top: 20px; border-top: 1px solid #ddd; font-size: 12px; color: #666; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { text-align: left; padding: 8px; border-bottom: 1px solid #ddd; }
+    th { background-color: #f2f2f2; }
+    .action-required { background-color: #dc3545; color: white; padding: 10px; text-align: center; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h2>🔥 CRITICAL ALERT 🔥</h2>
+    <p>Immediate Action Required</p>
+  </div>
+
+  <div class="action-required">
+    CRITICAL ISSUE DETECTED - IMMEDIATE ATTENTION REQUIRED
+  </div>
+
+  {{ range .Alerts }}
+  <div class="alert">
+    <h3>{{ .Labels.alertname }}</h3>
+    <p><strong>Status:</strong> {{ .Status }}</p>
+    <p><strong>Component:</strong> {{ .Labels.component }}</p>
+    <p><strong>Summary:</strong> {{ .Annotations.summary }}</p>
+    <p><strong>Description:</strong> {{ .Annotations.description }}</p>
+    <p><strong>Started At:</strong> {{ .StartsAt.Format "2006-01-02 15:04:05 MST" }}</p>
+
+    <h4>Alert Details:</h4>
+    <table>
+      {{ range .Labels.SortedPairs }}
+      <tr>
+        <th>{{ .Name }}</th>
+        <td>{{ .Value }}</td>
+      </tr>
+      {{ end }}
+    </table>
+  </div>
+  {{ end }}
+
+  <div class="footer">
+    <p><strong>Action Items:</strong></p>
+    <ol>
+      <li>Acknowledge this alert immediately</li>
+      <li>Check system health in Prometheus and Grafana</li>
+      <li>Review application logs for errors</li>
+      <li>Escalate if issue persists</li>
+    </ol>
+    <p><a href="http://localhost:19090/alerts">View in Prometheus</a> | <a href="http://localhost:13000">View in Grafana</a></p>
+  </div>
+</body>
+</html>
+{{ end }}
+
+{{ define "email.warning.html" }}
+<!DOCTYPE html>
+<html>
+<head>
+  <style>
+    body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+    .header { background-color: #ffc107; color: #333; padding: 20px; text-align: center; }
+    .alert { margin: 20px 0; padding: 15px; border-left: 4px solid #ffc107; background-color: #fff3cd; }
+    .footer { margin-top: 30px; padding-top: 20px; border-top: 1px solid #ddd; font-size: 12px; color: #666; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { text-align: left; padding: 8px; border-bottom: 1px solid #ddd; }
+    th { background-color: #f2f2f2; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h2>⚠️ Warning Alert</h2>
+    <p>Attention Required</p>
+  </div>
+
+  {{ range .Alerts }}
+  <div class="alert">
+    <h3>{{ .Labels.alertname }}</h3>
+    <p><strong>Status:</strong> {{ .Status }}</p>
+    <p><strong>Component:</strong> {{ .Labels.component }}</p>
+    <p><strong>Summary:</strong> {{ .Annotations.summary }}</p>
+    <p><strong>Description:</strong> {{ .Annotations.description }}</p>
+    <p><strong>Started At:</strong> {{ .StartsAt.Format "2006-01-02 15:04:05 MST" }}</p>
+
+    <h4>Alert Details:</h4>
+    <table>
+      {{ range .Labels.SortedPairs }}
+      <tr>
+        <th>{{ .Name }}</th>
+        <td>{{ .Value }}</td>
+      </tr>
+      {{ end }}
+    </table>
+  </div>
+  {{ end }}
+
+  <div class="footer">
+    <p>This warning should be investigated when possible. It may escalate to critical if not addressed.</p>
+    <p><a href="http://localhost:19090/alerts">View in Prometheus</a> | <a href="http://localhost:13000">View in Grafana</a></p>
+  </div>
+</body>
+</html>
+{{ end }}
+
+{{ define "email.job.html" }}
+<!DOCTYPE html>
+<html>
+<head>
+  <style>
+    body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
+    .header { background-color: #17a2b8; color: white; padding: 20px; text-align: center; }
+    .alert { margin: 20px 0; padding: 15px; border-left: 4px solid #17a2b8; background-color: #d1ecf1; }
+    .footer { margin-top: 30px; padding-top: 20px; border-top: 1px solid #ddd; font-size: 12px; color: #666; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { text-align: left; padding: 8px; border-bottom: 1px solid #ddd; }
+    th { background-color: #f2f2f2; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h2>⚙️ Job Processing Alert</h2>
+    <p>Job Status Notification</p>
+  </div>
+
+  {{ range .Alerts }}
+  <div class="alert">
+    <h3>{{ .Labels.alertname }}</h3>
+    <p><strong>Status:</strong> {{ .Status }}</p>
+    <p><strong>Summary:</strong> {{ .Annotations.summary }}</p>
+    <p><strong>Description:</strong> {{ .Annotations.description }}</p>
+    <p><strong>Started At:</strong> {{ .StartsAt.Format "2006-01-02 15:04:05 MST" }}</p>
+
+    <h4>Job Details:</h4>
+    <table>
+      {{ range .Labels.SortedPairs }}
+      <tr>
+        <th>{{ .Name }}</th>
+        <td>{{ .Value }}</td>
+      </tr>
+      {{ end }}
+    </table>
+  </div>
+  {{ end }}
+
+  <div class="footer">
+    <p>Check the job queue and worker status in Grafana for more details.</p>
+    <p><a href="http://localhost:19090/alerts">View in Prometheus</a> | <a href="http://localhost:13000/d/jobs/job-processing">View Job Dashboard</a></p>
+  </div>
+</body>
+</html>
+{{ end }}

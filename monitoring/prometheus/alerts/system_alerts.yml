@@ -1,0 +1,204 @@
+groups:
+  - name: system_health_alerts
+    interval: 30s
+    rules:
+      # High Memory Usage
+      - alert: HighMemoryUsage
+        expr: |
+          (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) > 0.90
+        for: 5m
+        labels:
+          severity: warning
+          component: system
+        annotations:
+          summary: "High memory usage detected"
+          description: "Memory usage is {{ $value | humanizePercentage }}. Available memory is critically low."
+
+      # Critical Memory Usage
+      - alert: CriticalMemoryUsage
+        expr: |
+          (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) > 0.95
+        for: 2m
+        labels:
+          severity: critical
+          component: system
+        annotations:
+          summary: "Critical memory usage"
+          description: "Memory usage is {{ $value | humanizePercentage }}. System may become unresponsive!"
+
+      # High CPU Usage
+      - alert: HighCPUUsage
+        expr: |
+          100 - (avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
+        for: 10m
+        labels:
+          severity: warning
+          component: system
+        annotations:
+          summary: "High CPU usage detected"
+          description: "CPU usage is {{ $value | humanizePercentage }} on {{ $labels.instance }}."
+
+      # Critical CPU Usage
+      - alert: CriticalCPUUsage
+        expr: |
+          100 - (avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 95
+        for: 5m
+        labels:
+          severity: critical
+          component: system
+        annotations:
+          summary: "Critical CPU usage"
+          description: "CPU usage is {{ $value | humanizePercentage }} on {{ $labels.instance }}. System is overloaded!"
+
+      # Disk Space Low
+      - alert: DiskSpaceLow
+        expr: |
+          (node_filesystem_avail_bytes{mountpoint="/data"} / node_filesystem_size_bytes{mountpoint="/data"}) < 0.20
+        for: 5m
+        labels:
+          severity: warning
+          component: storage
+        annotations:
+          summary: "Low disk space on /data"
+          description: "Only {{ $value | humanizePercentage }} of disk space is available on /data. Consider cleanup or expansion."
+
+      # Disk Space Critical
+      - alert: DiskSpaceCritical
+        expr: |
+          (node_filesystem_avail_bytes{mountpoint="/data"} / node_filesystem_size_bytes{mountpoint="/data"}) < 0.10
+        for: 2m
+        labels:
+          severity: critical
+          component: storage
+        annotations:
+          summary: "Critical disk space on /data"
+          description: "Only {{ $value | humanizePercentage }} of disk space is available on /data. System may fail!"
+
+      # High Disk I/O Wait
+      - alert: HighDiskIOWait
+        expr: |
+          rate(node_cpu_seconds_total{mode="iowait"}[5m]) > 0.20
+        for: 10m
+        labels:
+          severity: warning
+          component: system
+        annotations:
+          summary: "High disk I/O wait time"
+          description: "Disk I/O wait is {{ $value | humanizePercentage }} on {{ $labels.instance }}. Disk may be bottleneck."
+
+      # Application Down
+      - alert: ApplicationDown
+        expr: up{job="fastapi"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: application
+        annotations:
+          summary: "FastAPI application is down"
+          description: "FastAPI application on {{ $labels.instance }} is not responding to health checks."
+
+      # PostgreSQL Down
+      - alert: PostgreSQLDown
+        expr: up{job="postgresql"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: database
+        annotations:
+          summary: "PostgreSQL database is down"
+          description: "PostgreSQL database on {{ $labels.instance }} is not responding."
+
+      # Redis Down
+      - alert: RedisDown
+        expr: up{job="redis"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: cache
+        annotations:
+          summary: "Redis cache is down"
+          description: "Redis cache on {{ $labels.instance }} is not responding."
+
+      # High Database Connection Usage
+      - alert: HighDatabaseConnectionUsage
+        expr: |
+          (db_connections_active / (db_connections_active + db_connections_idle)) > 0.80
+        for: 5m
+        labels:
+          severity: warning
+          component: database
+        annotations:
+          summary: "High database connection usage"
+          description: "{{ $value | humanizePercentage }} of database connections are in use. May need to increase connection pool size."
+
+      # Database Connection Pool Exhausted
+      - alert: DatabaseConnectionPoolExhausted
+        expr: |
+          db_connections_idle == 0 and db_connections_active > 0
+        for: 2m
+        labels:
+          severity: critical
+          component: database
+        annotations:
+          summary: "Database connection pool exhausted"
+          description: "All database connections are in use. Application may fail to acquire connections!"
+
+      # MinIO Storage Down
+      - alert: MinIODown
+        expr: up{job="minio"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          component: storage
+        annotations:
+          summary: "MinIO object storage is down"
+          description: "MinIO storage service is not responding. File uploads/downloads will fail."
+
+      # Airflow Scheduler Down
+      - alert: AirflowSchedulerDown
+        expr: up{job="airflow-scheduler"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          component: orchestration
+        annotations:
+          summary: "Airflow scheduler is down"
+          description: "Airflow scheduler is not running. DAGs will not be triggered."
+
+      # High Application Restart Rate
+      - alert: HighApplicationRestartRate
+        expr: |
+          rate(app_uptime_seconds[10m]) < -1
+        for: 5m
+        labels:
+          severity: warning
+          component: application
+        annotations:
+          summary: "Application is restarting frequently"
+          description: "Application has restarted multiple times in the last 10 minutes. Check for crashes."
+
+      # Container Resource Limits Reached
+      - alert: ContainerMemoryLimitReached
+        expr: |
+          (container_memory_usage_bytes / container_spec_memory_limit_bytes) > 0.90
+        for: 5m
+        labels:
+          severity: warning
+          component: container
+        annotations:
+          summary: "Container {{ $labels.name }} is near memory limit"
+          description: "Container {{ $labels.name }} is using {{ $value | humanizePercentage }} of its memory limit."
+
+      # Network Connectivity Issues
+      - alert: NetworkConnectivityIssues
+        expr: |
+          rate(node_network_receive_errs_total[5m]) > 10
+          or
+          rate(node_network_transmit_errs_total[5m]) > 10
+        for: 5m
+        labels:
+          severity: warning
+          component: network
+        annotations:
+          summary: "Network errors detected on {{ $labels.device }}"
+          description: "Network interface {{ $labels.device }} is experiencing {{ $value }} errors per second."

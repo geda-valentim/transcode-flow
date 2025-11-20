@@ -1,0 +1,870 @@
+"""
+API Key Management Endpoints
+
+Provides comprehensive API key management including:
+- Key generation and rotation
+- Scope and permission management
+- IP filtering (whitelist/blacklist)
+- Usage analytics
+- Master/sub-key hierarchies
+- Key expiration and revocation
+"""
+
+from datetime import datetime, timezone, timedelta
+from typing import Optional, List, Dict, Any
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from sqlalchemy.orm import Session
+from sqlalchemy import func, and_
+from pydantic import BaseModel, Field, EmailStr
+import secrets
+import hashlib
+
+from app.core.database import get_db
+from app.core.security import get_current_api_key
+from app.models.api_key import APIKey
+
+
+# ========================================
+# Schemas
+# ========================================
+
+class APIKeyCreate(BaseModel):
+    """Request body for creating a new API key"""
+
+    name: str = Field(..., description="Descriptive name for the API key", min_length=1, max_length=255)
+    email: Optional[EmailStr] = Field(None, description="Email of the key owner")
+    organization: Optional[str] = Field(None, description="Organization name", max_length=255)
+
+    # Permissions
+    permissions: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Custom permissions object"
+    )
+    scopes: Optional[List[str]] = Field(
+        None,
+        description="List of scopes (e.g., ['jobs:create', 'jobs:read'])"
+    )
+
+    # Rate limiting
+    rate_limit_per_hour: int = Field(100, ge=1, le=10000, description="Requests per hour")
+    rate_limit_per_day: int = Field(1000, ge=1, le=100000, description="Requests per day")
+
+    # Quotas
+    storage_quota_gb: int = Field(100, ge=1, le=10000, description="Storage quota in GB")
+    jobs_quota_monthly: int = Field(1000, ge=1, le=100000, description="Monthly jobs quota")
+
+    # Expiration
+    expires_in_days: Optional[int] = Field(None, ge=1, le=3650, description="Expiration in days (max 10 years)")
+
+    # IP Filtering
+    ip_whitelist: Optional[List[str]] = Field(None, description="Allowed IP addresses")
+    ip_blacklist: Optional[List[str]] = Field(None, description="Blocked IP addresses")
+
+    # Hierarchy
+    is_master_key: bool = Field(False, description="Whether this is a master key")
+
+    # Metadata
+    notes: Optional[str] = Field(None, description="Additional notes", max_length=2048)
+    key_metadata: Optional[Dict[str, Any]] = Field(None, description="Custom metadata")
+
+
+class APIKeyResponse(BaseModel):
+    """Response containing API key details"""
+
+    id: int
+    key_prefix: str
+    name: str
+    email: Optional[str]
+    organization: Optional[str]
+    is_active: bool
+    is_master_key: bool
+
+    permissions: Dict[str, Any]
+    scopes: List[str]
+
+    rate_limit_per_hour: int
+    rate_limit_per_day: int
+
+    storage_quota_gb: int
+    storage_used_bytes: int
+    storage_usage_percent: float
+
+    jobs_quota_monthly: int
+    jobs_used_monthly: int
+    jobs_usage_percent: float
+
+    total_requests: int
+    last_used_at: Optional[datetime]
+
+    expires_at: Optional[datetime]
+    is_expired: bool
+    is_valid: bool
+
+    ip_whitelist: Optional[List[str]]
+    ip_blacklist: Optional[List[str]]
+
+    parent_key_id: Optional[int]
+    rotated_from_key_id: Optional[int]
+    rotation_scheduled_at: Optional[datetime]
+
+    notes: Optional[str]
+    key_metadata: Optional[Dict[str, Any]]
+
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class APIKeyCreatedResponse(APIKeyResponse):
+    """Response when a new API key is created (includes the full key)"""
+
+    api_key: str = Field(..., description="The full API key (only shown once)")
+
+
+class APIKeyRotateRequest(BaseModel):
+    """Request body for rotating an API key"""
+
+    expires_old_key_in_days: int = Field(
+        30,
+        ge=1,
+        le=365,
+        description="How many days until the old key expires"
+    )
+    schedule_rotation: bool = Field(
+        False,
+        description="Whether to schedule automatic rotation for the new key"
+    )
+    rotation_days: Optional[int] = Field(
+        None,
+        ge=30,
+        le=365,
+        description="Days until next rotation (if schedule_rotation is True)"
+    )
+
+
+class APIKeyUpdateScopes(BaseModel):
+    """Request body for updating API key scopes"""
+
+    scopes: List[str] = Field(..., description="New list of scopes")
+    merge: bool = Field(
+        False,
+        description="Whether to merge with existing scopes or replace completely"
+    )
+
+
+class APIKeyUpdateIPFilter(BaseModel):
+    """Request body for updating IP filtering"""
+
+    ip_whitelist: Optional[List[str]] = Field(None, description="Allowed IPs (null to clear)")
+    ip_blacklist: Optional[List[str]] = Field(None, description="Blocked IPs (null to clear)")
+
+
+class APIKeyUsageStats(BaseModel):
+    """Detailed usage statistics for an API key"""
+
+    key_id: int
+    key_prefix: str
+    name: str
+
+    # Current period stats
+    total_requests: int
+    requests_today: int
+    requests_this_hour: int
+
+    # Resource usage
+    storage_used_bytes: int
+    storage_quota_gb: int
+    storage_usage_percent: float
+    storage_remaining_gb: float
+
+    jobs_used_monthly: int
+    jobs_quota_monthly: int
+    jobs_usage_percent: float
+    jobs_remaining: int
+
+    # Rate limit status
+    rate_limit_per_hour: int
+    rate_limit_per_day: int
+    rate_limit_status: str  # "healthy", "warning", "critical"
+
+    # Activity
+    last_used_at: Optional[datetime]
+    days_since_last_use: Optional[int]
+
+    # Expiration
+    expires_at: Optional[datetime]
+    days_until_expiration: Optional[int]
+    is_expired: bool
+
+    # Rotation
+    needs_rotation: bool
+    rotation_scheduled_at: Optional[datetime]
+
+
+class SubKeyCreate(BaseModel):
+    """Request body for creating a sub-key"""
+
+    name: str = Field(..., description="Descriptive name for the sub-key", min_length=1, max_length=255)
+    scopes: List[str] = Field(..., description="Scopes for the sub-key (subset of parent scopes)")
+
+    expires_in_days: Optional[int] = Field(
+        90,
+        ge=1,
+        le=365,
+        description="Expiration in days (max 1 year for sub-keys)"
+    )
+
+    ip_whitelist: Optional[List[str]] = Field(None, description="Allowed IP addresses")
+    notes: Optional[str] = Field(None, description="Additional notes", max_length=2048)
+
+
+# ========================================
+# Router
+# ========================================
+
+router = APIRouter(prefix="/api-keys", tags=["api-keys"])
+
+
+# ========================================
+# Helper Functions
+# ========================================
+
+def generate_api_key() -> tuple[str, str, str]:
+    """
+    Generate a new API key.
+
+    Returns:
+        tuple: (full_key, key_hash, key_prefix)
+    """
+    # Generate a secure random key (32 bytes = 256 bits)
+    raw_key = secrets.token_urlsafe(32)
+    full_key = f"tfk_{raw_key}"  # tfk = TranscodeFlow Key
+
+    # Hash the key for storage
+    key_hash = hashlib.sha256(full_key.encode()).hexdigest()
+
+    # First 8 characters for identification
+    key_prefix = full_key[:12]  # "tfk_" + first 8 chars
+
+    return full_key, key_hash, key_prefix
+
+
+def calculate_rate_limit_status(
+    current_hour_requests: int,
+    current_day_requests: int,
+    hour_limit: int,
+    day_limit: int
+) -> str:
+    """Calculate rate limit health status"""
+    hour_usage = (current_hour_requests / hour_limit) * 100
+    day_usage = (current_day_requests / day_limit) * 100
+
+    max_usage = max(hour_usage, day_usage)
+
+    if max_usage >= 90:
+        return "critical"
+    elif max_usage >= 75:
+        return "warning"
+    else:
+        return "healthy"
+
+
+# ========================================
+# Endpoints
+# ========================================
+
+@router.post(
+    "",
+    response_model=APIKeyCreatedResponse,
+    status_code=201,
+    summary="Create new API key",
+    description="""
+    Create a new API key with custom permissions, quotas, and restrictions.
+
+    - Only master keys can create new top-level API keys
+    - The full API key is only returned once during creation
+    - Configure scopes, rate limits, quotas, and IP filtering
+    - Optionally set expiration date
+    """
+)
+async def create_api_key(
+    request_data: APIKeyCreate,
+    db: Session = Depends(get_db),
+    current_key: APIKey = Depends(get_current_api_key)
+) -> APIKeyCreatedResponse:
+    """Create a new API key"""
+
+    # Only master keys can create new top-level keys
+    if not current_key.is_master_key:
+        raise HTTPException(
+            status_code=403,
+            detail="Only master API keys can create new keys. Use the sub-keys endpoint instead."
+        )
+
+    # Generate the API key
+    full_key, key_hash, key_prefix = generate_api_key()
+
+    # Calculate expiration if specified
+    expires_at = None
+    if request_data.expires_in_days:
+        expires_at = datetime.now(timezone.utc) + timedelta(days=request_data.expires_in_days)
+
+    # Use default permissions if not provided
+    permissions = request_data.permissions or {
+        "can_upload": True,
+        "can_transcode": True,
+        "can_extract_audio": True,
+        "can_transcribe": False,
+        "max_resolution": "1080p",
+    }
+
+    # Use default scopes if not provided
+    scopes = request_data.scopes or [
+        "jobs:create",
+        "jobs:read",
+        "jobs:list",
+        "streaming:generate_token",
+    ]
+
+    # Create the new API key
+    new_key = APIKey(
+        key_hash=key_hash,
+        key_prefix=key_prefix,
+        name=request_data.name,
+        email=request_data.email,
+        organization=request_data.organization,
+        is_active=True,
+        permissions=permissions,
+        scopes=scopes,
+        rate_limit_per_hour=request_data.rate_limit_per_hour,
+        rate_limit_per_day=request_data.rate_limit_per_day,
+        storage_quota_gb=request_data.storage_quota_gb,
+        jobs_quota_monthly=request_data.jobs_quota_monthly,
+        expires_at=expires_at,
+        ip_whitelist=request_data.ip_whitelist,
+        ip_blacklist=request_data.ip_blacklist,
+        is_master_key=request_data.is_master_key,
+        notes=request_data.notes,
+        key_metadata=request_data.key_metadata,
+    )
+
+    db.add(new_key)
+    db.commit()
+    db.refresh(new_key)
+
+    # Create response with the full API key
+    response_data = APIKeyResponse.model_validate(new_key).model_dump()
+    response_data["api_key"] = full_key
+
+    return APIKeyCreatedResponse(**response_data)
+
+
+@router.get(
+    "/{key_id}",
+    response_model=APIKeyResponse,
+    summary="Get API key details",
+    description="Get detailed information about a specific API key"
+)
+async def get_api_key(
+    key_id: int,
+    db: Session = Depends(get_db),
+    current_key: APIKey = Depends(get_current_api_key)
+):
+    """Get API key details"""
+
+    # Query the key
+    api_key = db.query(APIKey).filter(APIKey.id == key_id).first()
+
+    if not api_key:
+        raise HTTPException(status_code=404, detail="API key not found")
+
+    # Authorization: can only view own key or sub-keys (if master)
+    if api_key.id != current_key.id:
+        if not current_key.is_master_key:
+            raise HTTPException(status_code=403, detail="Access denied")
+
+        # Master key can only view its sub-keys
+        if api_key.parent_key_id != current_key.id:
+            raise HTTPException(status_code=403, detail="Access denied")
+
+    return APIKeyResponse.model_validate(api_key)
+
+
+@router.get(
+    "",
+    response_model=List[APIKeyResponse],
+    summary="List API keys",
+    description="""
+    List API keys accessible to the current key.
+
+    - Regular keys see only themselves
+    - Master keys see themselves and their sub-keys
+    """
+)
+async def list_api_keys(
+    include_inactive: bool = False,
+    db: Session = Depends(get_db),
+    current_key: APIKey = Depends(get_current_api_key)
+):
+    """List API keys"""
+
+    query = db.query(APIKey)
+
+    if current_key.is_master_key:
+        # Master key sees itself and its sub-keys
+        query = query.filter(
+            (APIKey.id == current_key.id) | (APIKey.parent_key_id == current_key.id)
+        )
+    else:
+        # Regular key sees only itself
+        query = query.filter(APIKey.id == current_key.id)
+
+    if not include_inactive:
+        query = query.filter(APIKey.is_active == True)
+
+    keys = query.order_by(APIKey.created_at.desc()).all()
+
+    return [APIKeyResponse.model_validate(key) for key in keys]
+
+
+@router.post(
+    "/{key_id}/rotate",
+    response_model=APIKeyCreatedResponse,
+    summary="Rotate API key",
+    description="""
+    Rotate an API key by creating a new key and scheduling the old one for expiration.
+
+    - Creates a new key with the same permissions and quotas
+    - Old key remains valid for the specified grace period
+    - New key is tracked in the rotation chain
+    - Optionally schedule automatic rotation for the new key
+    """
+)
+async def rotate_api_key(
+    key_id: int,
+    request_data: APIKeyRotateRequest,
+    db: Session = Depends(get_db),
+    current_key: APIKey = Depends(get_current_api_key)
+):
+    """Rotate an API key"""
+
+    # Get the key to rotate
+    old_key = db.query(APIKey).filter(APIKey.id == key_id).first()
+
+    if not old_key:
+        raise HTTPException(status_code=404, detail="API key not found")
+
+    # Authorization
+    if old_key.id != current_key.id:
+        if not current_key.is_master_key or old_key.parent_key_id != current_key.id:
+            raise HTTPException(status_code=403, detail="Access denied")
+
+    # Generate new API key
+    full_key, key_hash, key_prefix = generate_api_key()
+
+    # Calculate expiration for old key
+    old_key_expires_at = datetime.now(timezone.utc) + timedelta(days=request_data.expires_old_key_in_days)
+
+    # Calculate rotation schedule for new key if requested
+    new_key_rotation_at = None
+    if request_data.schedule_rotation and request_data.rotation_days:
+        new_key_rotation_at = datetime.now(timezone.utc) + timedelta(days=request_data.rotation_days)
+
+    # Create new key with same properties
+    new_key = APIKey(
+        key_hash=key_hash,
+        key_prefix=key_prefix,
+        name=f"{old_key.name} (Rotated)",
+        email=old_key.email,
+        organization=old_key.organization,
+        is_active=True,
+        permissions=old_key.permissions,
+        scopes=old_key.scopes,
+        rate_limit_per_hour=old_key.rate_limit_per_hour,
+        rate_limit_per_day=old_key.rate_limit_per_day,
+        storage_quota_gb=old_key.storage_quota_gb,
+        jobs_quota_monthly=old_key.jobs_quota_monthly,
+        expires_at=old_key.expires_at,  # Keep same expiration policy
+        ip_whitelist=old_key.ip_whitelist,
+        ip_blacklist=old_key.ip_blacklist,
+        is_master_key=old_key.is_master_key,
+        parent_key_id=old_key.parent_key_id,
+        rotated_from_key_id=old_key.id,
+        rotation_scheduled_at=new_key_rotation_at,
+        key_metadata=old_key.key_metadata,
+        notes=f"Rotated from key {old_key.key_prefix}",
+    )
+
+    # Update old key
+    old_key.expires_at = old_key_expires_at
+    old_key.notes = f"{old_key.notes or ''}\nRotated on {datetime.now(timezone.utc).isoformat()}. Expires in {request_data.expires_old_key_in_days} days."
+
+    db.add(new_key)
+    db.commit()
+    db.refresh(new_key)
+
+    # Create response with the full API key
+    response_data = APIKeyResponse.model_validate(new_key).model_dump()
+    response_data["api_key"] = full_key
+
+    return APIKeyCreatedResponse(**response_data)
+
+
+@router.patch(
+    "/{key_id}/scopes",
+    response_model=APIKeyResponse,
+    summary="Update API key scopes",
+    description="""
+    Update the scopes for an API key.
+
+    - Can replace all scopes or merge with existing ones
+    - Sub-keys cannot have scopes beyond their parent's scopes
+    """
+)
+async def update_api_key_scopes(
+    key_id: int,
+    request_data: APIKeyUpdateScopes,
+    db: Session = Depends(get_db),
+    current_key: APIKey = Depends(get_current_api_key)
+):
+    """Update API key scopes"""
+
+    # Get the key to update
+    api_key = db.query(APIKey).filter(APIKey.id == key_id).first()
+
+    if not api_key:
+        raise HTTPException(status_code=404, detail="API key not found")
+
+    # Authorization
+    if api_key.id != current_key.id:
+        if not current_key.is_master_key or api_key.parent_key_id != current_key.id:
+            raise HTTPException(status_code=403, detail="Access denied")
+
+    # If this is a sub-key, validate scopes are subset of parent
+    if api_key.parent_key_id:
+        parent_key = db.query(APIKey).filter(APIKey.id == api_key.parent_key_id).first()
+        if parent_key:
+            parent_scopes = set(parent_key.scopes or [])
+            requested_scopes = set(request_data.scopes)
+
+            if not requested_scopes.issubset(parent_scopes):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Sub-key scopes must be a subset of parent key scopes. Parent scopes: {list(parent_scopes)}"
+                )
+
+    # Update scopes
+    if request_data.merge:
+        current_scopes = set(api_key.scopes or [])
+        new_scopes = current_scopes.union(set(request_data.scopes))
+        api_key.scopes = list(new_scopes)
+    else:
+        api_key.scopes = request_data.scopes
+
+    db.commit()
+    db.refresh(api_key)
+
+    return APIKeyResponse.model_validate(api_key)
+
+
+@router.patch(
+    "/{key_id}/ip-filter",
+    response_model=APIKeyResponse,
+    summary="Update IP filtering",
+    description="""
+    Update IP whitelist and blacklist for an API key.
+
+    - Set to null to clear existing lists
+    - Whitelist takes precedence over blacklist
+    """
+)
+async def update_ip_filter(
+    key_id: int,
+    request_data: APIKeyUpdateIPFilter,
+    db: Session = Depends(get_db),
+    current_key: APIKey = Depends(get_current_api_key)
+):
+    """Update IP filtering for an API key"""
+
+    # Get the key to update
+    api_key = db.query(APIKey).filter(APIKey.id == key_id).first()
+
+    if not api_key:
+        raise HTTPException(status_code=404, detail="API key not found")
+
+    # Authorization
+    if api_key.id != current_key.id:
+        if not current_key.is_master_key or api_key.parent_key_id != current_key.id:
+            raise HTTPException(status_code=403, detail="Access denied")
+
+    # Update IP filters
+    api_key.ip_whitelist = request_data.ip_whitelist
+    api_key.ip_blacklist = request_data.ip_blacklist
+
+    db.commit()
+    db.refresh(api_key)
+
+    return APIKeyResponse.model_validate(api_key)
+
+
+@router.get(
+    "/{key_id}/analytics",
+    response_model=APIKeyUsageStats,
+    summary="Get API key usage analytics",
+    description="""
+    Get detailed usage statistics and analytics for an API key.
+
+    - Current usage stats (requests, storage, jobs)
+    - Rate limit status
+    - Activity tracking
+    - Expiration warnings
+    - Rotation recommendations
+    """
+)
+async def get_api_key_analytics(
+    key_id: int,
+    db: Session = Depends(get_db),
+    current_key: APIKey = Depends(get_current_api_key)
+):
+    """Get detailed analytics for an API key"""
+
+    # Get the key
+    api_key = db.query(APIKey).filter(APIKey.id == key_id).first()
+
+    if not api_key:
+        raise HTTPException(status_code=404, detail="API key not found")
+
+    # Authorization
+    if api_key.id != current_key.id:
+        if not current_key.is_master_key or api_key.parent_key_id != current_key.id:
+            raise HTTPException(status_code=403, detail="Access denied")
+
+    # Calculate storage remaining
+    storage_remaining_bytes = (api_key.storage_quota_gb * 1024 * 1024 * 1024) - api_key.storage_used_bytes
+    storage_remaining_gb = storage_remaining_bytes / (1024 * 1024 * 1024)
+
+    # Calculate jobs remaining
+    jobs_remaining = api_key.jobs_quota_monthly - api_key.jobs_used_monthly
+
+    # Calculate days since last use
+    days_since_last_use = None
+    if api_key.last_used_at:
+        delta = datetime.now(timezone.utc) - api_key.last_used_at
+        days_since_last_use = delta.days
+
+    # Calculate days until expiration
+    days_until_expiration = None
+    if api_key.expires_at:
+        delta = api_key.expires_at - datetime.now(timezone.utc)
+        days_until_expiration = delta.days
+
+    # For demo purposes, calculate hypothetical rate limit status
+    # In production, you'd query actual request counts from a time-series DB or Redis
+    requests_this_hour = 0  # Would come from rate limiter
+    requests_today = 0  # Would come from rate limiter
+
+    rate_limit_status = calculate_rate_limit_status(
+        requests_this_hour,
+        requests_today,
+        api_key.rate_limit_per_hour,
+        api_key.rate_limit_per_day
+    )
+
+    return APIKeyUsageStats(
+        key_id=api_key.id,
+        key_prefix=api_key.key_prefix,
+        name=api_key.name,
+        total_requests=api_key.total_requests,
+        requests_today=requests_today,
+        requests_this_hour=requests_this_hour,
+        storage_used_bytes=api_key.storage_used_bytes,
+        storage_quota_gb=api_key.storage_quota_gb,
+        storage_usage_percent=api_key.storage_usage_percent,
+        storage_remaining_gb=storage_remaining_gb,
+        jobs_used_monthly=api_key.jobs_used_monthly,
+        jobs_quota_monthly=api_key.jobs_quota_monthly,
+        jobs_usage_percent=api_key.jobs_usage_percent,
+        jobs_remaining=jobs_remaining,
+        rate_limit_per_hour=api_key.rate_limit_per_hour,
+        rate_limit_per_day=api_key.rate_limit_per_day,
+        rate_limit_status=rate_limit_status,
+        last_used_at=api_key.last_used_at,
+        days_since_last_use=days_since_last_use,
+        expires_at=api_key.expires_at,
+        days_until_expiration=days_until_expiration,
+        is_expired=api_key.is_expired,
+        needs_rotation=api_key.needs_rotation(),
+        rotation_scheduled_at=api_key.rotation_scheduled_at,
+    )
+
+
+@router.delete(
+    "/{key_id}",
+    status_code=204,
+    summary="Revoke/delete API key",
+    description="""
+    Revoke or delete an API key.
+
+    - Immediately deactivates the key
+    - Cannot be undone
+    - Master keys can revoke their sub-keys
+    """
+)
+async def revoke_api_key(
+    key_id: int,
+    permanent_delete: bool = False,
+    db: Session = Depends(get_db),
+    current_key: APIKey = Depends(get_current_api_key)
+):
+    """Revoke or delete an API key"""
+
+    # Get the key to revoke
+    api_key = db.query(APIKey).filter(APIKey.id == key_id).first()
+
+    if not api_key:
+        raise HTTPException(status_code=404, detail="API key not found")
+
+    # Authorization
+    if api_key.id == current_key.id:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot revoke your own API key. Use a different key to revoke this one."
+        )
+
+    if not current_key.is_master_key:
+        raise HTTPException(status_code=403, detail="Only master keys can revoke keys")
+
+    if api_key.parent_key_id != current_key.id and api_key.id != current_key.id:
+        raise HTTPException(status_code=403, detail="Can only revoke your own sub-keys")
+
+    # Revoke or delete
+    if permanent_delete:
+        db.delete(api_key)
+    else:
+        api_key.is_active = False
+        api_key.notes = f"{api_key.notes or ''}\nRevoked on {datetime.now(timezone.utc).isoformat()}"
+
+    db.commit()
+
+    return Response(status_code=204)
+
+
+@router.post(
+    "/{parent_key_id}/sub-keys",
+    response_model=APIKeyCreatedResponse,
+    status_code=201,
+    summary="Create sub-key",
+    description="""
+    Create a sub-key under a master API key.
+
+    - Sub-keys have restricted scopes (subset of parent)
+    - Sub-keys inherit parent's organization and quotas (with lower limits)
+    - Sub-keys have shorter expiration times
+    - Useful for delegating access to specific services or teams
+    """
+)
+async def create_sub_key(
+    parent_key_id: int,
+    request_data: SubKeyCreate,
+    db: Session = Depends(get_db),
+    current_key: APIKey = Depends(get_current_api_key)
+):
+    """Create a sub-key under a master key"""
+
+    # Verify parent key exists and is a master key
+    parent_key = db.query(APIKey).filter(APIKey.id == parent_key_id).first()
+
+    if not parent_key:
+        raise HTTPException(status_code=404, detail="Parent API key not found")
+
+    if not parent_key.is_master_key:
+        raise HTTPException(status_code=400, detail="Parent key must be a master key")
+
+    # Authorization: only the master key itself can create sub-keys
+    if parent_key.id != current_key.id:
+        raise HTTPException(status_code=403, detail="Can only create sub-keys for your own master key")
+
+    # Validate scopes are subset of parent
+    parent_scopes = set(parent_key.scopes or [])
+    requested_scopes = set(request_data.scopes)
+
+    if not requested_scopes.issubset(parent_scopes):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Sub-key scopes must be a subset of parent key scopes. Parent scopes: {list(parent_scopes)}"
+        )
+
+    # Generate the API key
+    full_key, key_hash, key_prefix = generate_api_key()
+
+    # Calculate expiration
+    expires_at = datetime.now(timezone.utc) + timedelta(days=request_data.expires_in_days)
+
+    # Create the sub-key with reduced quotas (50% of parent)
+    sub_key = APIKey(
+        key_hash=key_hash,
+        key_prefix=key_prefix,
+        name=request_data.name,
+        email=parent_key.email,
+        organization=parent_key.organization,
+        is_active=True,
+        permissions=parent_key.permissions,  # Inherit parent permissions
+        scopes=request_data.scopes,
+        rate_limit_per_hour=parent_key.rate_limit_per_hour // 2,
+        rate_limit_per_day=parent_key.rate_limit_per_day // 2,
+        storage_quota_gb=parent_key.storage_quota_gb // 2,
+        jobs_quota_monthly=parent_key.jobs_quota_monthly // 2,
+        expires_at=expires_at,
+        ip_whitelist=request_data.ip_whitelist or parent_key.ip_whitelist,
+        ip_blacklist=parent_key.ip_blacklist,
+        is_master_key=False,
+        parent_key_id=parent_key.id,
+        notes=request_data.notes,
+    )
+
+    db.add(sub_key)
+    db.commit()
+    db.refresh(sub_key)
+
+    # Create response with the full API key
+    response_data = APIKeyResponse.model_validate(sub_key).model_dump()
+    response_data["api_key"] = full_key
+
+    return APIKeyCreatedResponse(**response_data)
+
+
+@router.get(
+    "/{parent_key_id}/sub-keys",
+    response_model=List[APIKeyResponse],
+    summary="List sub-keys",
+    description="List all sub-keys for a master API key"
+)
+async def list_sub_keys(
+    parent_key_id: int,
+    include_inactive: bool = False,
+    db: Session = Depends(get_db),
+    current_key: APIKey = Depends(get_current_api_key)
+):
+    """List all sub-keys for a master key"""
+
+    # Verify parent key exists
+    parent_key = db.query(APIKey).filter(APIKey.id == parent_key_id).first()
+
+    if not parent_key:
+        raise HTTPException(status_code=404, detail="Parent API key not found")
+
+    # Authorization
+    if parent_key.id != current_key.id:
+        raise HTTPException(status_code=403, detail="Can only list sub-keys for your own master key")
+
+    # Query sub-keys
+    query = db.query(APIKey).filter(APIKey.parent_key_id == parent_key_id)
+
+    if not include_inactive:
+        query = query.filter(APIKey.is_active == True)
+
+    sub_keys = query.order_by(APIKey.created_at.desc()).all()
+
+    return [APIKeyResponse.model_validate(key) for key in sub_keys]
