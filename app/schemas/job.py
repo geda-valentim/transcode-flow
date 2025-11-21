@@ -195,7 +195,7 @@ class JobResponse(BaseModel):
     retry_count: int
 
     # Metadata
-    metadata: Optional[Dict[str, Any]] = None
+    metadata: Optional[Dict[str, Any]] = Field(None, alias='job_metadata')
     webhook_url: Optional[str] = None
     webhook_sent: bool
 
@@ -205,6 +205,7 @@ class JobResponse(BaseModel):
 
     class Config:
         from_attributes = True  # Pydantic v2 (was orm_mode in v1)
+        populate_by_name = True  # Allow population by field name or alias
 
 
 class JobListResponse(BaseModel):

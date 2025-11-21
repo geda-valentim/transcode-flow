@@ -27,11 +27,11 @@ def validate_video_task(**context):
     from app.services.video_validator import VideoValidator
 
     job_id = context['dag_run'].conf.get('job_id')
-    video_path = context['dag_run'].conf.get('video_path')
+    video_path = context['dag_run'].conf.get('source_path')  # Changed from 'video_path' to 'source_path'
 
     # Translate host path to container path if needed
     # Host: /home/transcode-flow/data/temp/ -> Container: /data/temp/
-    if video_path.startswith('/home/transcode-flow/data/temp/'):
+    if video_path and video_path.startswith('/home/transcode-flow/data/temp/'):
         container_path = video_path.replace('/home/transcode-flow/data/temp/', '/data/temp/')
         logger.info(f"[Task 1] Translated path: {video_path} -> {container_path}")
         video_path = container_path
@@ -81,16 +81,56 @@ def validate_video_task(**context):
         db.commit()
         logger.info(f"[Task 1] Video validated successfully: {job.source_resolution}, {job.source_duration_seconds}s")
 
-        # Store video path in XCom for other tasks
+        # Push comprehensive validation data to XCom for downstream tasks
+        validation_data = {
+            'source_path': job.source_path,
+            'job_id': str(job.job_id),
+            'duration_seconds': float(job.source_duration_seconds) if job.source_duration_seconds else None,
+            'resolution': job.source_resolution,
+            'width': validation_result.width,
+            'height': validation_result.height,
+            'size_bytes': job.source_size_bytes,
+            'codec': job.source_codec,
+            'bitrate': int(job.source_bitrate) if job.source_bitrate else None,
+            'fps': float(job.source_fps) if job.source_fps else None,
+            'format': validation_result.format if hasattr(validation_result, 'format') else None,
+            'validation_status': 'success',
+            'validation_warnings': validation_result.warnings if validation_result.warnings else []
+        }
+
+        # Push individual values for easy access
         context['task_instance'].xcom_push(key='source_path', value=job.source_path)
         context['task_instance'].xcom_push(key='job_id', value=str(job.job_id))
+        context['task_instance'].xcom_push(key='duration_seconds', value=float(job.source_duration_seconds) if job.source_duration_seconds else None)
+
+        # Push complete validation data
+        context['task_instance'].xcom_push(key='validation_data', value=validation_data)
+
+        logger.info(f"[Task 1] ✅ Validation data pushed to XCom: {list(validation_data.keys())}")
 
     except Exception as e:
-        logger.error(f"[Task 1] Validation failed: {e}")
+        error_type = type(e).__name__
+        error_message = str(e)
+        logger.error(f"[Task 1] ❌ Validation failed: {error_type}: {error_message}")
+
+        # Push error information to XCom for error tracking/reporting
+        error_data = {
+            'error_type': error_type,
+            'error_message': error_message,
+            'task_name': 'validate_video',
+            'job_id': job_id if 'job_id' in locals() else None,
+            'stage': 'validation',
+            'validation_status': 'failed'
+        }
+        context['task_instance'].xcom_push(key='error_data', value=error_data)
+
+        # Update job status in database
         if 'job' in locals() and job is not None:
             job.status = JobStatus.FAILED
-            job.error_message = str(e)
+            job.error_message = f"{error_type}: {error_message}"
             db.commit()
+            logger.info(f"[Task 1] Job {job.job_id} marked as FAILED in database")
+
         raise
     finally:
         db.close()

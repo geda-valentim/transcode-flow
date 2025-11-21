@@ -34,7 +34,7 @@ def update_database_task(**context):
             raise ValueError(f"Job {job_id} not found")
 
         # Get uploaded file paths from XCom
-        uploaded_files = context['task_instance'].xcom_pull(key='uploaded_files')
+        uploaded_files = context['task_instance'].xcom_pull(key='uploaded_files', task_ids='upload_outputs')
 
         # Update job status
         job.status = JobStatus.COMPLETED

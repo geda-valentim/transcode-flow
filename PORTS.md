@@ -21,6 +21,7 @@ Todas as portas foram configuradas no range **1xxxx** para evitar conflitos.
 | **Prometheus** | 9090 | **19090** | http://localhost:19090 |
 | **Alertmanager** | 9093 | **19093** | http://localhost:19093 |
 | **Node Exporter** | 9100 | **19100** | http://localhost:19100/metrics |
+| **NGINX Exporter** | 9113 | **19113** | http://localhost:19113/metrics |
 | **Redis Exporter** | 9121 | **19121** | http://localhost:19121/metrics |
 | **Postgres Exporter** | 9187 | **19187** | http://localhost:19187/metrics |
 
@@ -184,5 +185,5 @@ redis-cli -h localhost -p 16379 ping
 
 ---
 
-**Última Atualização:** 2025-11-18
+**Última Atualização:** 2025-11-20
 **Range de Portas:** 10080-19187

@@ -126,7 +126,7 @@ def upload_outputs_task(**context):
         uploaded_files = {}
 
         # 1. Upload thumbnails
-        thumbnail_paths = context['task_instance'].xcom_pull(key='thumbnail_paths')
+        thumbnail_paths = context['task_instance'].xcom_pull(key='thumbnail_paths', task_ids='generate_thumbnail')
         if thumbnail_paths:
             uploaded_files['thumbnails'] = []
             total_thumbs = len(thumbnail_paths)
@@ -142,7 +142,7 @@ def upload_outputs_task(**context):
                 logger.info(f"[Task 9] Uploaded thumbnail {i+1}/{total_thumbs}")
 
         # 2. Upload 360p video
-        video_360p_path = context['task_instance'].xcom_pull(key='360p_path')
+        video_360p_path = context['task_instance'].xcom_pull(key='360p_path', task_ids='transcode_360p')
         if video_360p_path and os.path.exists(video_360p_path):
             object_name = f"{job_id}/videos/360p.mp4"
             minio_client.fput_object(bucket_name, object_name, video_360p_path)
@@ -150,7 +150,7 @@ def upload_outputs_task(**context):
             logger.info(f"[Task 9] Uploaded 360p video")
 
         # 3. Upload 720p video
-        video_720p_path = context['task_instance'].xcom_pull(key='720p_path')
+        video_720p_path = context['task_instance'].xcom_pull(key='720p_path', task_ids='transcode_720p')
         if video_720p_path and os.path.exists(video_720p_path):
             object_name = f"{job_id}/videos/720p.mp4"
             minio_client.fput_object(bucket_name, object_name, video_720p_path)
@@ -158,7 +158,7 @@ def upload_outputs_task(**context):
             logger.info(f"[Task 9] Uploaded 720p video")
 
         # 4. Upload MP3 audio
-        audio_mp3_path = context['task_instance'].xcom_pull(key='audio_mp3_path')
+        audio_mp3_path = context['task_instance'].xcom_pull(key='audio_mp3_path', task_ids='extract_audio_mp3')
         if audio_mp3_path and os.path.exists(audio_mp3_path):
             object_name = f"{job_id}/audio/audio.mp3"
             minio_client.fput_object(bucket_name, object_name, audio_mp3_path)
@@ -166,7 +166,7 @@ def upload_outputs_task(**context):
             logger.info(f"[Task 9] Uploaded MP3 audio")
 
         # 5. Upload HLS 360p segments
-        hls_360p_dir = context['task_instance'].xcom_pull(key='hls_360p_dir')
+        hls_360p_dir = context['task_instance'].xcom_pull(key='hls_360p_dir', task_ids='prepare_hls_360p')
         if hls_360p_dir and os.path.exists(hls_360p_dir):
             uploaded_files['hls_360p'] = []
             for file_path in Path(hls_360p_dir).rglob("*"):
@@ -177,7 +177,7 @@ def upload_outputs_task(**context):
             logger.info(f"[Task 9] Uploaded HLS 360p ({len(uploaded_files['hls_360p'])} files)")
 
         # 6. Upload HLS 720p segments
-        hls_720p_dir = context['task_instance'].xcom_pull(key='hls_720p_dir')
+        hls_720p_dir = context['task_instance'].xcom_pull(key='hls_720p_dir', task_ids='prepare_hls_720p')
         if hls_720p_dir and os.path.exists(hls_720p_dir):
             uploaded_files['hls_720p'] = []
             for file_path in Path(hls_720p_dir).rglob("*"):

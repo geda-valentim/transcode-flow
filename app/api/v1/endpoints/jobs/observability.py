@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 import requests
 import os
+from datetime import datetime, timezone, timedelta
 
 from app.db import get_db
 from app.models.job import Job
@@ -16,9 +17,53 @@ from app.core.security import get_api_key
 router = APIRouter()
 
 # Airflow API configuration
-AIRFLOW_API_URL = os.getenv("AIRFLOW_API_URL", "http://airflow-webserver:8080/api/v1")
-AIRFLOW_USERNAME = os.getenv("AIRFLOW_USERNAME", "admin")
-AIRFLOW_PASSWORD = os.getenv("AIRFLOW_PASSWORD", "admin")
+# NOTE: Airflow 3.x uses /api/v2 (v1 was removed) and requires JWT authentication
+AIRFLOW_API_URL = os.getenv("AIRFLOW_API_URL", "http://airflow-webserver:8080/api/v2")
+AIRFLOW_AUTH_URL = os.getenv("AIRFLOW_AUTH_URL", "http://airflow-webserver:8080/auth/token")
+AIRFLOW_USERNAME = os.getenv("AIRFLOW_ADMIN_USER", "admin")
+AIRFLOW_PASSWORD = os.getenv("AIRFLOW_ADMIN_PASSWORD", "admin")
+
+# Cache JWT token
+_jwt_token_cache = {"token": None, "expires": None}
+
+
+def get_jwt_token() -> str:
+    """
+    Get JWT token for Airflow API authentication with caching.
+
+    Returns:
+        str: JWT access token
+    """
+    # Check cache
+    if _jwt_token_cache["token"] and _jwt_token_cache["expires"]:
+        if datetime.now(timezone.utc) < _jwt_token_cache["expires"]:
+            return _jwt_token_cache["token"]
+
+    # Generate new token
+    try:
+        response = requests.post(
+            AIRFLOW_AUTH_URL,
+            json={
+                "username": AIRFLOW_USERNAME,
+                "password": AIRFLOW_PASSWORD
+            },
+            headers={"Content-Type": "application/json"},
+            timeout=5
+        )
+
+        if response.status_code in (200, 201):
+            token_data = response.json()
+            token = token_data.get("access_token")
+
+            # Cache for 50 minutes
+            _jwt_token_cache["token"] = token
+            _jwt_token_cache["expires"] = datetime.now(timezone.utc) + timedelta(minutes=50)
+
+            return token
+        else:
+            raise Exception(f"Failed to get JWT token: {response.status_code}")
+    except Exception as e:
+        raise Exception(f"Error getting JWT token: {str(e)}")
 
 
 def get_airflow_xcom(
@@ -28,7 +73,7 @@ def get_airflow_xcom(
     xcom_key: str
 ) -> Optional[Any]:
     """
-    Retrieve XCom value from Airflow API.
+    Retrieve XCom value from Airflow API using JWT authentication.
 
     Args:
         dag_id: DAG ID
@@ -45,9 +90,10 @@ def get_airflow_xcom(
     )
 
     try:
+        token = get_jwt_token()
         response = requests.get(
             url,
-            auth=(AIRFLOW_USERNAME, AIRFLOW_PASSWORD),
+            headers={"Authorization": f"Bearer {token}"},
             timeout=5
         )
 
@@ -68,7 +114,9 @@ def get_all_task_xcoms(
     task_id: str
 ) -> Dict[str, Any]:
     """
-    Retrieve all XCom entries for a task.
+    Retrieve all XCom entries for a task using JWT authentication.
+
+    In Airflow 3.x API v2, XCom values must be fetched individually per key.
 
     Args:
         dag_id: DAG ID
@@ -78,26 +126,53 @@ def get_all_task_xcoms(
     Returns:
         Dictionary of all XCom key-value pairs
     """
-    url = (
+    # First get list of XCom keys
+    list_url = (
         f"{AIRFLOW_API_URL}/dags/{dag_id}/dagRuns/{dag_run_id}/"
         f"taskInstances/{task_id}/xcomEntries"
     )
 
     try:
+        token = get_jwt_token()
         response = requests.get(
-            url,
-            auth=(AIRFLOW_USERNAME, AIRFLOW_PASSWORD),
+            list_url,
+            headers={"Authorization": f"Bearer {token}"},
             timeout=5
         )
 
-        if response.status_code == 200:
-            data = response.json()
-            xcoms = {}
-            for entry in data.get("xcom_entries", []):
-                xcoms[entry["key"]] = entry["value"]
-            return xcoms
-        else:
+        if response.status_code != 200:
             return {}
+
+        data = response.json()
+        xcoms = {}
+
+        # Fetch each XCom value individually
+        for entry in data.get("xcom_entries", []):
+            key = entry.get("key")
+            if not key:
+                continue
+
+            # Fetch individual XCom value
+            value_url = (
+                f"{AIRFLOW_API_URL}/dags/{dag_id}/dagRuns/{dag_run_id}/"
+                f"taskInstances/{task_id}/xcomEntries/{key}"
+            )
+
+            try:
+                value_response = requests.get(
+                    value_url,
+                    headers={"Authorization": f"Bearer {token}"},
+                    timeout=5
+                )
+
+                if value_response.status_code == 200:
+                    value_data = value_response.json()
+                    xcoms[key] = value_data.get("value")
+            except:
+                # Skip individual XCom if fetch fails
+                continue
+
+        return xcoms
     except Exception as e:
         return {}
 
@@ -162,33 +237,125 @@ async def get_transcription_progress(
             "message": "Transcription is not enabled for this job"
         }
 
-    # Get DAG run ID from job metadata or construct it
-    # Assuming DAG run ID follows pattern: manual__YYYY-MM-DDTHH:MM:SS.ffffff+00:00
+    # Get DAG run ID from job metadata
     dag_id = "video_transcoding_pipeline"
+    task_id = "transcribe_audio"
 
-    # Try to get XCom data from Airflow
-    # Note: We need the dag_run_id which should be stored in job metadata
-    # For now, we'll try to get all XComs for the transcribe_audio task
+    # Check if dag_run_id is stored in job metadata
+    dag_run_id = None
+    if job.job_metadata and isinstance(job.job_metadata, dict):
+        dag_run_id = job.job_metadata.get("dag_run_id")
 
-    # Build response with available data
+    if not dag_run_id:
+        return {
+            "job_id": job_id,
+            "transcription_enabled": True,
+            "job_status": job.status.value,
+            "progress": {
+                "status": "not_started",
+                "message": "DAG not triggered yet or dag_run_id not available"
+            },
+            "airflow_integration": {
+                "dag_id": dag_id,
+                "task_id": task_id,
+                "note": "DAG run ID not found in job metadata"
+            }
+        }
+
+    # Retrieve XCom data from Airflow
+    xcoms = get_all_task_xcoms(dag_id, dag_run_id, task_id)
+
+    # Parse XCom data to build progress response
+    status_value = xcoms.get("transcription_status", "unknown")
+
+    progress_data = {
+        "status": status_value
+    }
+
+    # Helper function to extract numeric value from potential Decimal objects
+    def extract_numeric_value(value):
+        """Extract numeric value from Decimal objects or return as-is."""
+        if isinstance(value, dict) and "__data__" in value:
+            # Handle serialized Decimal from Airflow XCom
+            return float(value["__data__"])
+        return value
+
+    # Add model information if available
+    if "whisper_model_selected" in xcoms:
+        progress_data["whisper_model"] = xcoms["whisper_model_selected"]
+        progress_data["model_speed"] = xcoms.get("whisper_model_speed")
+        progress_data["model_quality"] = xcoms.get("whisper_model_quality")
+
+    # Add duration and processing metrics
+    if "video_duration_seconds" in xcoms:
+        progress_data["video_duration_seconds"] = extract_numeric_value(xcoms["video_duration_seconds"])
+
+    if "audio_file_size_mb" in xcoms:
+        progress_data["audio_file_size_mb"] = extract_numeric_value(xcoms["audio_file_size_mb"])
+
+    # Calculate processing duration if available
+    if status_value in ["transcribing", "completed"]:
+        from datetime import datetime
+        start_time_str = xcoms.get("transcription_processing_start")
+        if start_time_str:
+            try:
+                start_time = datetime.fromisoformat(start_time_str.replace('Z', '+00:00'))
+
+                if status_value == "completed":
+                    end_time_str = xcoms.get("transcription_processing_end")
+                    if end_time_str:
+                        end_time = datetime.fromisoformat(end_time_str.replace('Z', '+00:00'))
+                        duration = (end_time - start_time).total_seconds()
+                        progress_data["processing_duration_seconds"] = round(duration, 2)
+                else:
+                    # Still processing - calculate elapsed time
+                    from datetime import timezone
+                    now = datetime.now(timezone.utc)
+                    elapsed = (now - start_time).total_seconds()
+                    progress_data["processing_duration_seconds"] = round(elapsed, 2)
+
+                    # Estimate time remaining based on video duration
+                    video_duration = progress_data.get("video_duration_seconds")
+                    if video_duration:
+                        # Whisper tiny typically processes at ~15x realtime
+                        estimated_total = video_duration / 15
+                        remaining = max(0, estimated_total - elapsed)
+                        progress_data["estimated_time_remaining_seconds"] = round(remaining, 2)
+            except:
+                pass
+
+    # Add completion metrics if available
+    if status_value == "completed":
+        if "transcription_text_length" in xcoms:
+            progress_data["text_length_characters"] = xcoms["transcription_text_length"]
+        if "transcription_segments_count" in xcoms:
+            progress_data["segments_count"] = xcoms["transcription_segments_count"]
+        if "transcription_detected_language" in xcoms:
+            progress_data["detected_language"] = xcoms["transcription_detected_language"]
+
+    # Build metrics section
+    metrics = {}
+    if "transcription_start_time" in xcoms:
+        metrics["start_time"] = xcoms["transcription_start_time"]
+    if "transcription_processing_start" in xcoms:
+        metrics["processing_start"] = xcoms["transcription_processing_start"]
+    if status_value == "completed" and "transcription_processing_end" in xcoms:
+        metrics["processing_end"] = xcoms["transcription_processing_end"]
+
     response = {
         "job_id": job_id,
         "transcription_enabled": True,
         "job_status": job.status.value,
-        "progress": {
-            "status": "unknown",
-            "message": "Transcription task not started or XCom data not available"
-        },
+        "progress": progress_data,
         "airflow_integration": {
-            "note": "To enable real-time progress tracking, ensure DAG run ID is stored in job metadata",
             "dag_id": dag_id,
-            "task_id": "transcribe_audio"
+            "dag_run_id": dag_run_id,
+            "task_id": task_id
         }
     }
 
-    # TODO: Store dag_run_id in job metadata when triggering Airflow DAG
-    # Then we can retrieve real XCom data like this:
-    # xcoms = get_all_task_xcoms(dag_id, job.dag_run_id, "transcribe_audio")
+    if metrics:
+        response["metrics"] = metrics
 
     return response
 

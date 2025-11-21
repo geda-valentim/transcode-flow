@@ -50,8 +50,7 @@ scrape_configs:
     static_configs:
       - targets: ['node-exporter:9100']
 
-  # NGINX
+  # NGINX exporter
   - job_name: 'nginx'
     static_configs:
-      - targets: ['nginx:80']
-    metrics_path: '/metrics'
+      - targets: ['nginx-exporter:9113']

@@ -1,0 +1,396 @@
+groups:
+  # =========================================
+  # Job Processing Alerts
+  # =========================================
+  - name: job_alerts
+    interval: 30s
+    rules:
+      # High job failure rate
+      - alert: HighJobFailureRate
+        expr: |
+          (
+            rate(jobs_failed_total[5m])
+            /
+            (rate(jobs_completed_total[5m]) + rate(jobs_failed_total[5m]))
+          ) > 0.10
+        for: 5m
+        labels:
+          severity: warning
+          component: jobs
+        annotations:
+          summary: "High job failure rate detected"
+          description: "Job failure rate is {{ $value | humanizePercentage }} (threshold: 10%)"
+
+      # Critical job failure rate
+      - alert: CriticalJobFailureRate
+        expr: |
+          (
+            rate(jobs_failed_total[5m])
+            /
+            (rate(jobs_completed_total[5m]) + rate(jobs_failed_total[5m]))
+          ) > 0.25
+        for: 2m
+        labels:
+          severity: critical
+          component: jobs
+        annotations:
+          summary: "CRITICAL: Very high job failure rate"
+          description: "Job failure rate is {{ $value | humanizePercentage }} (threshold: 25%)"
+
+      # Jobs stuck in queue
+      - alert: JobsStuckInQueue
+        expr: jobs_queued > 50
+        for: 30m
+        labels:
+          severity: warning
+          component: jobs
+        annotations:
+          summary: "Large number of jobs queued"
+          description: "{{ $value }} jobs have been in queue for over 30 minutes"
+
+      # Long job processing time
+      - alert: SlowJobProcessing
+        expr: |
+          histogram_quantile(0.95,
+            rate(job_processing_duration_seconds_bucket[10m])
+          ) > 3600
+        for: 10m
+        labels:
+          severity: warning
+          component: jobs
+        annotations:
+          summary: "Jobs taking longer than usual to process"
+          description: "95th percentile job processing time is {{ $value | humanizeDuration }}"
+
+      # No jobs processed recently (possible system issue)
+      - alert: NoJobsProcessed
+        expr: rate(jobs_completed_total[15m]) == 0 and jobs_queued > 0
+        for: 15m
+        labels:
+          severity: critical
+          component: jobs
+        annotations:
+          summary: "No jobs being processed despite queue having jobs"
+          description: "System may be stuck - jobs in queue but none processed in 15 minutes"
+
+  # =========================================
+  # API Performance Alerts
+  # =========================================
+  - name: api_alerts
+    interval: 30s
+    rules:
+      # High API error rate
+      - alert: HighAPIErrorRate
+        expr: |
+          (
+            sum(rate(api_requests_total{status=~"5.."}[5m]))
+            /
+            sum(rate(api_requests_total[5m]))
+          ) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          component: api
+        annotations:
+          summary: "High API error rate"
+          description: "API error rate is {{ $value | humanizePercentage }} (threshold: 5%)"
+
+      # Slow API responses
+      - alert: SlowAPIResponses
+        expr: |
+          histogram_quantile(0.95,
+            rate(api_request_duration_seconds_bucket[5m])
+          ) > 5
+        for: 10m
+        labels:
+          severity: warning
+          component: api
+        annotations:
+          summary: "API responses are slow"
+          description: "95th percentile response time is {{ $value }}s (threshold: 5s)"
+
+      # Too many requests in progress (possible bottleneck)
+      - alert: APIBottleneck
+        expr: sum(api_requests_in_progress) > 100
+        for: 5m
+        labels:
+          severity: warning
+          component: api
+        annotations:
+          summary: "API processing bottleneck detected"
+          description: "{{ $value }} requests are currently in progress (threshold: 100)"
+
+      # Rate limit being hit frequently
+      - alert: FrequentRateLimiting
+        expr: rate(api_key_rate_limit_exceeded[5m]) > 1
+        for: 5m
+        labels:
+          severity: warning
+          component: api
+        annotations:
+          summary: "Rate limits being exceeded frequently"
+          description: "Rate limit exceeded {{ $value }} times per second for API key {{ $labels.api_key_prefix }}"
+
+  # =========================================
+  # Webhook Alerts
+  # =========================================
+  - name: webhook_alerts
+    interval: 30s
+    rules:
+      # High webhook failure rate
+      - alert: HighWebhookFailureRate
+        expr: |
+          (
+            rate(webhook_sent_total{status="failed"}[10m])
+            /
+            rate(webhook_sent_total[10m])
+          ) > 0.20
+        for: 10m
+        labels:
+          severity: warning
+          component: webhooks
+        annotations:
+          summary: "High webhook failure rate"
+          description: "Webhook failure rate is {{ $value | humanizePercentage }} for event {{ $labels.event }}"
+
+      # Webhooks timing out
+      - alert: SlowWebhookDelivery
+        expr: |
+          histogram_quantile(0.95,
+            rate(webhook_duration_seconds_bucket[5m])
+          ) > 10
+        for: 10m
+        labels:
+          severity: warning
+          component: webhooks
+        annotations:
+          summary: "Webhooks taking too long to deliver"
+          description: "95th percentile webhook delivery time is {{ $value }}s"
+
+  # =========================================
+  # Storage Alerts
+  # =========================================
+  - name: storage_alerts
+    interval: 60s
+    rules:
+      # Storage quota nearly full
+      - alert: StorageQuotaNearFull
+        expr: |
+          (storage_used_bytes / storage_quota_bytes) > 0.90
+        for: 5m
+        labels:
+          severity: warning
+          component: storage
+        annotations:
+          summary: "Storage quota nearly exhausted"
+          description: "Storage usage is {{ $value | humanizePercentage }} for API key {{ $labels.api_key_prefix }}"
+
+      # Storage quota exceeded
+      - alert: StorageQuotaExceeded
+        expr: storage_used_bytes >= storage_quota_bytes
+        for: 2m
+        labels:
+          severity: critical
+          component: storage
+        annotations:
+          summary: "Storage quota exceeded"
+          description: "API key {{ $labels.api_key_prefix }} has exceeded storage quota"
+
+      # High storage operation failure rate
+      - alert: HighStorageFailureRate
+        expr: |
+          (
+            rate(storage_operations_total{status="failed"}[10m])
+            /
+            rate(storage_operations_total[10m])
+          ) > 0.10
+        for: 10m
+        labels:
+          severity: warning
+          component: storage
+        annotations:
+          summary: "High storage operation failure rate"
+          description: "{{ $value | humanizePercentage }} of {{ $labels.operation }} operations are failing"
+
+  # =========================================
+  # Celery Worker Alerts
+  # =========================================
+  - name: celery_alerts
+    interval: 30s
+    rules:
+      # No active Celery workers
+      - alert: NoCeleryWorkers
+        expr: celery_workers_active == 0
+        for: 2m
+        labels:
+          severity: critical
+          component: celery
+        annotations:
+          summary: "No Celery workers active"
+          description: "All Celery workers are down - job processing halted"
+
+      # Celery queue growing
+      - alert: CeleryQueueGrowing
+        expr: |
+          celery_queue_length > 100
+          and
+          rate(celery_queue_length[10m]) > 0
+        for: 15m
+        labels:
+          severity: warning
+          component: celery
+        annotations:
+          summary: "Celery queue is growing"
+          description: "Queue {{ $labels.queue_name }} has {{ $value }} tasks and is growing"
+
+      # High Celery task failure rate
+      - alert: HighCeleryTaskFailureRate
+        expr: |
+          (
+            rate(celery_tasks_total{status="failed"}[10m])
+            /
+            rate(celery_tasks_total{status=~"succeeded|failed"}[10m])
+          ) > 0.15
+        for: 10m
+        labels:
+          severity: warning
+          component: celery
+        annotations:
+          summary: "High Celery task failure rate"
+          description: "Task {{ $labels.task_name }} has {{ $value | humanizePercentage }} failure rate"
+
+  # =========================================
+  # Video Processing Alerts
+  # =========================================
+  - name: video_processing_alerts
+    interval: 60s
+    rules:
+      # Transcoding taking too long
+      - alert: SlowVideoTranscoding
+        expr: |
+          histogram_quantile(0.95,
+            rate(video_transcode_duration_seconds_bucket[15m])
+          ) > 7200
+        for: 15m
+        labels:
+          severity: warning
+          component: video
+        annotations:
+          summary: "Video transcoding is taking longer than usual"
+          description: "95th percentile transcode time is {{ $value | humanizeDuration }} for {{ $labels.resolution }}"
+
+      # Audio transcription slow
+      - alert: SlowTranscription
+        expr: |
+          histogram_quantile(0.95,
+            rate(transcription_duration_seconds_bucket[15m])
+          ) > 1800
+        for: 15m
+        labels:
+          severity: warning
+          component: video
+        annotations:
+          summary: "Audio transcription is slow"
+          description: "95th percentile transcription time is {{ $value | humanizeDuration }} for model {{ $labels.model }}"
+
+  # =========================================
+  # Database Alerts
+  # =========================================
+  - name: database_alerts
+    interval: 30s
+    rules:
+      # Slow database queries
+      - alert: SlowDatabaseQueries
+        expr: |
+          histogram_quantile(0.95,
+            rate(db_query_duration_seconds_bucket[5m])
+          ) > 1
+        for: 10m
+        labels:
+          severity: warning
+          component: database
+        annotations:
+          summary: "Database queries are slow"
+          description: "95th percentile query time is {{ $value }}s for {{ $labels.operation }}"
+
+      # High number of active connections
+      - alert: HighDatabaseConnections
+        expr: db_connections_active > 80
+        for: 10m
+        labels:
+          severity: warning
+          component: database
+        annotations:
+          summary: "High number of database connections"
+          description: "{{ $value }} active database connections (may indicate connection leak)"
+
+  # =========================================
+  # MinIO Alerts
+  # =========================================
+  - name: minio_alerts
+    interval: 60s
+    rules:
+      # MinIO node offline
+      - alert: MinIONodeOffline
+        expr: minio_cluster_nodes_offline_total > 0
+        for: 2m
+        labels:
+          severity: critical
+          component: storage
+        annotations:
+          summary: "MinIO node(s) offline"
+          description: "{{ $value }} MinIO node(s) are offline"
+
+      # MinIO disk usage high
+      - alert: MinIODiskUsageHigh
+        expr: |
+          (
+            minio_cluster_capacity_usable_free_bytes
+            /
+            minio_cluster_capacity_usable_total_bytes
+          ) < 0.10
+        for: 5m
+        labels:
+          severity: critical
+          component: storage
+        annotations:
+          summary: "MinIO disk space critically low"
+          description: "Only {{ $value | humanizePercentage }} free space remaining"
+
+  # =========================================
+  # Redis/Cache Alerts
+  # =========================================
+  - name: cache_alerts
+    interval: 30s
+    rules:
+      # Low cache hit rate
+      - alert: LowCacheHitRate
+        expr: |
+          (
+            rate(cache_operations_total{status="hit"}[10m])
+            /
+            rate(cache_operations_total{operation="get"}[10m])
+          ) < 0.50
+        for: 15m
+        labels:
+          severity: warning
+          component: cache
+        annotations:
+          summary: "Cache hit rate is low"
+          description: "Cache hit rate is {{ $value | humanizePercentage }} (threshold: 50%)"
+
+      # Redis memory usage high
+      - alert: RedisMemoryHigh
+        expr: |
+          (
+            redis_memory_used_bytes
+            /
+            redis_memory_max_bytes
+          ) > 0.90
+        for: 5m
+        labels:
+          severity: warning
+          component: cache
+        annotations:
+          summary: "Redis memory usage is high"
+          description: "Redis is using {{ $value | humanizePercentage }} of available memory"

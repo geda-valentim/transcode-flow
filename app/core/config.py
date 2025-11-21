@@ -77,6 +77,11 @@ class Settings(BaseSettings):
     WEBHOOK_TIMEOUT: int = 30  # seconds
     WEBHOOK_MAX_RETRIES: int = 3
 
+    # Airflow Integration
+    AIRFLOW_URL: str = Field("http://airflow-webserver:8080", env="AIRFLOW_URL")
+    AIRFLOW_ADMIN_USER: str = Field("admin", env="AIRFLOW_ADMIN_USER")
+    AIRFLOW_ADMIN_PASSWORD: str = Field("admin", env="AIRFLOW_ADMIN_PASSWORD")
+
     # Logging
     LOG_LEVEL: str = Field("INFO", env="LOG_LEVEL")
 

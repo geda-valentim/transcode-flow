@@ -19,10 +19,11 @@ if [ -f .env ]; then
 fi
 
 # Configuração (usa variáveis de ambiente do .env ou valores padrão)
-DB_HOST="${POSTGRES_HOST:-localhost}"
+# Note: Use localhost for host access, postgres hostname is for containers only
+DB_HOST="localhost"
 DB_PORT="${POSTGRES_EXTERNAL_PORT:-15432}"
-DB_USER="${POSTGRES_USER:-postgres}"
-DB_PASS="${POSTGRES_PASSWORD:-postgres}"
+DB_USER="${POSTGRES_USER:-transcode_user}"
+DB_PASS="${POSTGRES_PASSWORD:-CHANGE_ME_STRONG_PASSWORD_123}"
 DB_NAME="${POSTGRES_DB:-transcode_db}"
 AIRFLOW_URL="${AIRFLOW_URL:-http://localhost:18080}"
 

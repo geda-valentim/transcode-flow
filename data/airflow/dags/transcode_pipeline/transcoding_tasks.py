@@ -215,18 +215,49 @@ def transcribe_audio_task(**context):
     import time
 
     job_id = context['dag_run'].conf.get('job_id')
-    logger.info(f"[Task 6b] Transcribing audio for job {job_id}")
+    logger.info(f"[Task 6b] ═══ TRANSCRIPTION TASK STARTED ═══")
+    logger.info(f"[Task 6b] Job ID: {job_id}")
 
     # Heartbeat mechanism to keep Airflow task alive during long processing
     heartbeat_stop = threading.Event()
+    heartbeat_start_time = time.time()
+    heartbeat_phase = {"current": "initializing"}  # Shared state for phase tracking
+    video_duration = {"seconds": 0}  # Shared state for video duration
 
     def send_heartbeat():
-        """Send periodic heartbeats to Airflow"""
+        """Send periodic heartbeats with detailed progress information"""
         counter = 0
         while not heartbeat_stop.is_set():
             try:
                 counter += 1
-                logger.info(f"[Task 6b] Heartbeat {counter}: Transcription still running for job {job_id}")
+                elapsed = time.time() - heartbeat_start_time
+                elapsed_min = int(elapsed // 60)
+                elapsed_sec = int(elapsed % 60)
+
+                # Build progress message based on phase
+                phase = heartbeat_phase.get("current", "processing")
+                duration = video_duration.get("seconds", 0)
+
+                if phase == "extracting_audio":
+                    msg = f"⏳ Extracting audio from video ({elapsed_min}m {elapsed_sec}s elapsed)"
+                elif phase == "transcribing":
+                    # Estimate progress: Whisper typically processes at 10-30x realtime for tiny model
+                    # Conservative estimate: 15x realtime
+                    estimated_total_sec = duration / 15 if duration > 0 else 180
+                    progress_pct = min(95, int((elapsed / estimated_total_sec) * 100)) if estimated_total_sec > 0 else 0
+                    eta_sec = max(0, estimated_total_sec - elapsed)
+                    eta_min = int(eta_sec // 60)
+                    eta_sec_rem = int(eta_sec % 60)
+
+                    msg = (f"🎙️  Transcribing audio (model: tiny) | "
+                           f"Progress: ~{progress_pct}% | "
+                           f"Elapsed: {elapsed_min}m {elapsed_sec}s | "
+                           f"ETA: ~{eta_min}m {eta_sec_rem}s | "
+                           f"Video: {duration:.0f}s")
+                else:
+                    msg = f"⚙️  {phase} ({elapsed_min}m {elapsed_sec}s elapsed)"
+
+                logger.info(f"[Task 6b] Heartbeat {counter}: {msg} - Job: {job_id}")
                 time.sleep(30)  # Send heartbeat every 30 seconds
             except Exception as e:
                 logger.warning(f"[Task 6b] Heartbeat error: {e}")
@@ -283,7 +314,8 @@ def transcribe_audio_task(**context):
 
         logger.info(f"[Task 6b] Extracting audio for transcription: {' '.join(extract_cmd)}")
 
-        # Update XCom status
+        # Update XCom status and heartbeat phase
+        heartbeat_phase["current"] = "extracting_audio"
         context['task_instance'].xcom_push(
             key='transcription_status',
             value='extracting_audio'
@@ -347,7 +379,17 @@ def transcribe_audio_task(**context):
         )
 
         # Perform transcription
-        logger.info(f"[Task 6b] Starting Whisper transcription")
+        heartbeat_phase["current"] = "transcribing"
+        if job.source_duration_seconds:
+            video_duration["seconds"] = float(job.source_duration_seconds)
+            # Estimate processing time (Whisper tiny typically 10-30x realtime)
+            estimated_min = int((video_duration["seconds"] / 15) / 60)
+            estimated_sec = int((video_duration["seconds"] / 15) % 60)
+            logger.info(f"[Task 6b] 🎙️  Starting Whisper transcription")
+            logger.info(f"[Task 6b] Video duration: {video_duration['seconds']:.1f}s ({int(video_duration['seconds']//60)}m {int(video_duration['seconds']%60)}s)")
+            logger.info(f"[Task 6b] Estimated processing time: ~{estimated_min}m {estimated_sec}s (using 'tiny' model)")
+        else:
+            logger.info(f"[Task 6b] Starting Whisper transcription")
         context['task_instance'].xcom_push(
             key='transcription_status',
             value='transcribing'
@@ -368,8 +410,8 @@ def transcribe_audio_task(**context):
         # Calculate processing duration
         processing_end_time = datetime.now(timezone.utc)
         processing_start_time_str = context['task_instance'].xcom_pull(
-            task_ids='transcribe_audio',
-            key='transcription_processing_start'
+            key='transcription_processing_start',
+            task_ids='transcribe_audio'
         )
         if processing_start_time_str:
             processing_start_time = datetime.fromisoformat(processing_start_time_str)
@@ -377,13 +419,17 @@ def transcribe_audio_task(**context):
         else:
             processing_duration = 0
 
-        logger.info(
-            f"[Task 6b] Transcription completed: "
-            f"language={transcription.language}, "
-            f"text_length={len(transcription.text)} chars, "
-            f"processing_time={processing_duration:.1f}s, "
-            f"segments={len(transcription.segments)}"
-        )
+        # Calculate speed metrics
+        realtime_factor = (float(video_duration.get("seconds", 0)) / processing_duration) if processing_duration > 0 else 0
+
+        logger.info(f"[Task 6b] ═══ TRANSCRIPTION COMPLETED ═══")
+        logger.info(f"[Task 6b] ✅ Language detected: {transcription.language}")
+        logger.info(f"[Task 6b] ✅ Text length: {len(transcription.text)} characters")
+        logger.info(f"[Task 6b] ✅ Segments: {len(transcription.segments)}")
+        logger.info(f"[Task 6b] ✅ Processing time: {int(processing_duration//60)}m {int(processing_duration%60)}s")
+        if realtime_factor > 0:
+            logger.info(f"[Task 6b] ✅ Speed: {realtime_factor:.1f}x realtime")
+        logger.info(f"[Task 6b] ═══════════════════════════════")
 
         # Push comprehensive metrics to XCom
         context['task_instance'].xcom_push(

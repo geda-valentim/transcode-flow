@@ -59,7 +59,7 @@ make shell-redis    # Access Redis CLI
 ### Service Layer (Docker Compose)
 - **NGINX** (port 10080): Reverse proxy, rate limiting, routing
 - **FastAPI** (port 18000): REST API, async endpoints, Prometheus metrics
-- **Airflow 3.0** (port 18080): DAG orchestration, task scheduling
+- **Airflow 3.1.3** (port 18080): DAG orchestration, task scheduling
 - **Celery Workers**: Distributed task execution (FFmpeg, Whisper)
 - **PostgreSQL** (port 15432): Job metadata, API keys, state management
 - **Redis** (port 16379): Celery broker, caching
@@ -92,7 +92,7 @@ All ports use 1xxxx range to avoid conflicts (see PORTS.md).
 
 #### Airflow DAGs (`data/airflow/dags/`)
 - **video_transcoding_pipeline.py**: Main DAG with task dependency graph
-  - Uses Airflow 3.0 context manager pattern (`with DAG`)
+  - Uses Airflow 3.1+ context manager pattern (`with DAG`)
   - Triggered externally via API (schedule=None)
   - Max 8 concurrent runs, 3 retries with exponential backoff
 - **transcode_pipeline/**: Modular task packages
@@ -182,11 +182,41 @@ input_path = context['task_instance'].xcom_pull(
 4. Define dependencies using `>>` operator
 5. Use XCom for passing data: `context['ti'].xcom_push(key, value)` and `xcom_pull(key, task_ids)`
 
-### Airflow 3.0 Migration Notes
-- Use `with DAG(...)` context manager (not standalone `dag = DAG()`)
-- Use `from airflow.providers.standard.operators.python import PythonOperator`
-- Set `schedule=None` (not `schedule_interval=None`)
-- Execution API requires JWT configuration in docker-compose.yml
+### Airflow 3.1 Migration Notes
+
+**Current Version:** Airflow 3.1.3 (migrated from 2.10.4)
+
+#### Key Changes from Airflow 2.x to 3.1:
+1. **DAG Definition Pattern:**
+   - Use `with DAG(...)` context manager (not standalone `dag = DAG()`)
+   - Example: `with DAG(dag_id='my_dag', schedule=None, ...) as dag:`
+
+2. **Operator Imports:**
+   - Use `from airflow.providers.standard.operators.python import PythonOperator`
+   - Provider imports moved to `airflow.providers.standard.*` namespace
+
+3. **Scheduling:**
+   - Set `schedule=None` for externally triggered DAGs (not `schedule_interval=None`)
+   - Use cron expressions directly: `schedule='0 2 * * *'` (not wrapped in dict)
+
+4. **Authentication & Execution API:**
+   - Airflow 3.x requires JWT authentication for the Execution API
+   - Required environment variables (all configured in `.env` and `docker-compose.yml`):
+     - `AIRFLOW__API__AUTH_BACKENDS`: Comma-separated list of auth backends (session,basic_auth)
+     - `AIRFLOW__API__SECRET_KEY`: Secret key for API authentication
+     - `AIRFLOW__API_AUTH__JWT_SECRET`: JWT secret for token signing
+     - `AIRFLOW__API_AUTH__JWT_ALGORITHM`: JWT algorithm (HS256)
+     - `AIRFLOW__API_AUTH__AUTH_JWT_AUDIENCE`: JWT audience for API
+     - `AIRFLOW__TASK_EXECUTION_API__AUTH_JWT_AUDIENCE`: JWT audience for Task Execution API
+     - `AIRFLOW__CORE__EXECUTION_API_SERVER_URL`: URL for Execution API server
+
+5. **Provider Package Versions:**
+   - `apache-airflow-providers-celery>=3.13.0` (compatible with Airflow 3.1.3)
+   - `apache-airflow-providers-postgres>=5.13.0` (compatible with Airflow 3.1.3)
+
+6. **Docker Image:**
+   - Base image: `apache/airflow:3.1.3-python3.11`
+   - Default Python version changed to 3.12 in latest images (we use 3.11)
 
 ### Working with XCom
 Always specify source task when pulling to avoid ambiguous matches:

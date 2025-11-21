@@ -14,19 +14,19 @@ from . import creation, management, queries, export, observability
 # Create main router for jobs
 router = APIRouter()
 
-# Include creation endpoints (no prefix, direct routes)
+# Include creation endpoints (no prefix, direct routes like /upload)
 router.include_router(creation.router, tags=["jobs-creation"])
 
-# Include management endpoints (no prefix for /{job_id} routes)
-router.include_router(management.router, tags=["jobs-management"])
-
-# Include query endpoints (no prefix for list and search)
+# Include query endpoints first (for list endpoint at root /jobs)
 router.include_router(queries.router, tags=["jobs-queries"])
 
-# Include export endpoints (no prefix)
+# Include management endpoints (/{job_id} routes)
+router.include_router(management.router, tags=["jobs-management"])
+
+# Include export endpoints
 router.include_router(export.router, tags=["jobs-export"])
 
-# Include observability endpoints (no prefix)
+# Include observability endpoints
 router.include_router(observability.router, tags=["jobs-observability"])
 
 __all__ = ["router"]

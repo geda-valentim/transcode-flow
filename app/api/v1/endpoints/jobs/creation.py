@@ -19,6 +19,7 @@ from app.schemas.job import (
 )
 from app.core.security import get_api_key, check_jobs_quota
 from app.core.config import settings
+from app.services.airflow_trigger import airflow_trigger_service
 from .validations import (
     check_upload_permissions,
     check_job_permissions,
@@ -125,6 +126,29 @@ async def create_job_upload(
     # Increment usage counters
     increment_usage_counters(db, api_key, file_size)
 
+    # Trigger Airflow DAG for event-driven processing
+    try:
+        dag_run_info = airflow_trigger_service.trigger_video_transcoding_dag(
+            job_id=job.job_id,
+            source_path=temp_video_path,
+            priority=priority,
+            extra_conf={
+                "enable_hls": enable_hls,
+                "enable_audio_extraction": enable_audio_extraction,
+                "enable_transcription": enable_transcription,
+                "target_resolutions": resolutions_list,
+            }
+        )
+        # Store dag_run_id in job metadata for tracking
+        if dag_run_info:
+            if job.job_metadata is None:
+                job.job_metadata = {}
+            job.job_metadata["dag_run_id"] = dag_run_info.get("dag_run_id")
+            db.commit()
+    except Exception as e:
+        # Log error but don't fail the request - job is created and can be manually triggered
+        print(f"⚠️  Warning: Failed to trigger Airflow DAG for job {job.job_id}: {str(e)}")
+
     return JobCreateResponse(
         job_id=job.job_id,
         status=job.status,
@@ -190,6 +214,29 @@ async def create_job_filesystem(
 
     # Increment usage counters
     increment_usage_counters(db, api_key, validation_result.size_bytes)
+
+    # Trigger Airflow DAG for event-driven processing
+    try:
+        dag_run_info = airflow_trigger_service.trigger_video_transcoding_dag(
+            job_id=job.job_id,
+            source_path=job_data.source_path,
+            priority=job_data.priority,
+            extra_conf={
+                "enable_hls": job_data.enable_hls,
+                "enable_audio_extraction": job_data.enable_audio_extraction,
+                "enable_transcription": job_data.enable_transcription,
+                "target_resolutions": [r.value for r in job_data.target_resolutions],
+            }
+        )
+        # Store dag_run_id in job metadata for tracking
+        if dag_run_info:
+            if job.job_metadata is None:
+                job.job_metadata = {}
+            job.job_metadata["dag_run_id"] = dag_run_info.get("dag_run_id")
+            db.commit()
+    except Exception as e:
+        # Log error but don't fail the request - job is created and can be manually triggered
+        print(f"⚠️  Warning: Failed to trigger Airflow DAG for job {job.job_id}: {str(e)}")
 
     return JobCreateResponse(
         job_id=job.job_id,

@@ -109,7 +109,7 @@ services:
       AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: ${AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION}
       AIRFLOW__CORE__LOAD_EXAMPLES: ${AIRFLOW__CORE__LOAD_EXAMPLES}
       AIRFLOW__CORE__AUTH_MANAGER: ${AIRFLOW__CORE__AUTH_MANAGER}
-      AIRFLOW__API__AUTH_BACKENDS: ${AIRFLOW__API__AUTH_BACKEND}
+      AIRFLOW__FAB__AUTH_BACKENDS: ${AIRFLOW__FAB__AUTH_BACKENDS}
       AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW__WEBSERVER__SECRET_KEY}
       AIRFLOW__API__SECRET_KEY: ${AIRFLOW__API__SECRET_KEY}
       AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW__API_AUTH__JWT_SECRET}
@@ -344,6 +344,10 @@ services:
       SECRET_KEY: ${SECRET_KEY}
       API_HOST: ${API_HOST}
       API_PORT: ${API_PORT}
+      # Airflow integration for event-driven DAG triggering
+      AIRFLOW_URL: ${AIRFLOW_URL:-http://airflow-webserver:8080}
+      AIRFLOW_ADMIN_USER: ${AIRFLOW_ADMIN_USER}
+      AIRFLOW_ADMIN_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD}
     volumes:
       - ./app:/code/app
       - ./data/temp:/data/temp
@@ -422,8 +426,11 @@ services:
       GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER}
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD}
       GF_SERVER_HTTP_PORT: ${GRAFANA_PORT}
+      GF_PATHS_PROVISIONING: /etc/grafana/provisioning
     volumes:
       - ./data/grafana:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/etc/grafana/dashboards:ro
     ports:
       - "13000:3000"
     healthcheck:
@@ -497,6 +504,22 @@ services:
       REDIS_ADDR: "redis:6379"
     ports:
       - "19121:9121"
+    restart: unless-stopped
+    networks:
+      - transcode-network
+
+  # =========================================
+  # NGINX Exporter (NGINX Metrics)
+  # =========================================
+  nginx-exporter:
+    image: nginx/nginx-prometheus-exporter:latest
+    container_name: transcode-nginx-exporter
+    depends_on:
+      - nginx
+    command:
+      - '-nginx.scrape-uri=http://nginx:80/nginx_status'
+    ports:
+      - "19113:9113"
     restart: unless-stopped
     networks:
       - transcode-network

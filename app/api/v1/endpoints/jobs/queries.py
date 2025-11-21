@@ -16,7 +16,7 @@ from app.core.security import get_api_key
 router = APIRouter()
 
 
-@router.get("", response_model=dict)
+@router.get("/", response_model=dict)
 async def list_jobs(
     page: int = 1,
     page_size: int = 100,

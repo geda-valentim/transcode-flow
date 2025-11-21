@@ -12,7 +12,7 @@ Storage: MinIO ou filesystem direto
 ### **STACK:**
 
 ```
-Orchestration: Apache Airflow 2.8+
+Orchestration: Apache Airflow 3.1+
 Task Queue: Celery + Redis
 Object Storage: MinIO
 API: FastAPI + Uvicorn

@@ -18,7 +18,8 @@ from app.core.security import (
     increment_storage_usage,
 )
 from app.core.rate_limit import check_rate_limit
-from app.services.video_validator import video_validator, ValidationResult
+from app.services.video_validator import video_validator
+from app.schemas.job import VideoValidationResult
 from app.services.metadata_service import metadata_service
 
 
@@ -65,7 +66,7 @@ def check_upload_permissions(api_key: APIKey, enable_transcription: bool = False
 async def validate_and_process_upload(
     video_file: UploadFile,
     api_key: APIKey,
-) -> tuple[bytes, int, ValidationResult]:
+) -> tuple[bytes, int, VideoValidationResult]:
     """
     Validate uploaded file and check quotas.
 
@@ -106,7 +107,7 @@ async def validate_and_process_upload(
     return file_content, file_size, validation_result
 
 
-def validate_filesystem_path(source_path: str, api_key: APIKey) -> ValidationResult:
+def validate_filesystem_path(source_path: str, api_key: APIKey) -> VideoValidationResult:
     """
     Validate file from filesystem path.
 
@@ -115,7 +116,7 @@ def validate_filesystem_path(source_path: str, api_key: APIKey) -> ValidationRes
         api_key: API key for quota checks
 
     Returns:
-        ValidationResult object
+        VideoValidationResult object
 
     Raises:
         HTTPException: If file not found, validation fails, or quotas exceeded
@@ -173,7 +174,7 @@ def parse_metadata(metadata: Optional[str]) -> Optional[Dict[str, Any]]:
 
 
 def build_job_metadata(
-    validation_result: ValidationResult,
+    validation_result: VideoValidationResult,
     custom_metadata: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
     """
