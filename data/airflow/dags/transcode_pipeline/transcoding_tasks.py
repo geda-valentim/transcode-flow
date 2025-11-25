@@ -4,12 +4,245 @@ Transcoding Tasks
 Tasks related to video and audio transcoding.
 """
 import os
+import re
 import logging
 import subprocess
+import threading
+import time
 from pathlib import Path
 from datetime import datetime, timezone
+from typing import Optional, List, Callable
 
 logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# FFMPEG PROGRESS LOGGING HELPER
+# ============================================================================
+
+def run_ffmpeg_with_progress(
+    cmd: List[str],
+    task_name: str,
+    job_id: str,
+    total_duration_seconds: Optional[float] = None,
+    heartbeat_interval: int = 30,
+    on_progress: Optional[Callable[[dict], None]] = None
+) -> subprocess.CompletedProcess:
+    """
+    Execute FFmpeg command with real-time progress logging via heartbeats.
+
+    Args:
+        cmd: FFmpeg command as list of arguments
+        task_name: Name for logging (e.g., 'transcode_360p', 'transcode_720p')
+        job_id: Job ID for logging context
+        total_duration_seconds: Total video duration for progress percentage
+        heartbeat_interval: Seconds between heartbeat logs (default: 30)
+        on_progress: Optional callback for progress updates
+
+    Returns:
+        subprocess.CompletedProcess with returncode and captured stderr
+
+    Logs heartbeat every N seconds with:
+        - Current frame processed
+        - Time position in video
+        - Encoding speed (e.g., 2.5x realtime)
+        - Progress percentage (if duration known)
+        - Bitrate
+    """
+    # Convert Decimal to float if needed (database returns Decimal)
+    if total_duration_seconds is not None:
+        total_duration_seconds = float(total_duration_seconds)
+
+    # Ensure FFmpeg outputs progress to stderr (add -stats if not present)
+    if '-stats' not in cmd:
+        # Insert after 'ffmpeg'
+        cmd = [cmd[0], '-stats'] + cmd[1:]
+
+    # Progress tracking state
+    progress_state = {
+        'frame': 0,
+        'fps': 0.0,
+        'time': '00:00:00.00',
+        'time_seconds': 0.0,
+        'speed': '0x',
+        'bitrate': 'N/A',
+        'size': 'N/A',
+        'last_update': time.time()
+    }
+    heartbeat_stop = threading.Event()
+    start_time = time.time()
+    stderr_lines = []
+
+    def parse_ffmpeg_progress(line: str) -> bool:
+        """Parse FFmpeg progress line and update state. Returns True if progress found."""
+        # FFmpeg progress format: frame= 1234 fps= 30 ... time=00:01:23.45 ... speed=2.5x
+        updated = False
+
+        # Parse frame
+        frame_match = re.search(r'frame=\s*(\d+)', line)
+        if frame_match:
+            progress_state['frame'] = int(frame_match.group(1))
+            updated = True
+
+        # Parse fps
+        fps_match = re.search(r'fps=\s*([\d.]+)', line)
+        if fps_match:
+            progress_state['fps'] = float(fps_match.group(1))
+
+        # Parse time
+        time_match = re.search(r'time=(\d{2}:\d{2}:\d{2}\.\d+)', line)
+        if time_match:
+            progress_state['time'] = time_match.group(1)
+            # Convert to seconds
+            parts = time_match.group(1).split(':')
+            progress_state['time_seconds'] = (
+                float(parts[0]) * 3600 +
+                float(parts[1]) * 60 +
+                float(parts[2])
+            )
+            updated = True
+
+        # Parse speed
+        speed_match = re.search(r'speed=\s*([\d.]+)x', line)
+        if speed_match:
+            progress_state['speed'] = f"{speed_match.group(1)}x"
+
+        # Parse bitrate
+        bitrate_match = re.search(r'bitrate=\s*([\d.]+\w+/s)', line)
+        if bitrate_match:
+            progress_state['bitrate'] = bitrate_match.group(1)
+
+        # Parse size
+        size_match = re.search(r'size=\s*(\d+\w+)', line)
+        if size_match:
+            progress_state['size'] = size_match.group(1)
+
+        if updated:
+            progress_state['last_update'] = time.time()
+
+        return updated
+
+    def heartbeat_logger():
+        """Log progress every heartbeat_interval seconds."""
+        heartbeat_count = 0
+        last_log_time = 0
+
+        while not heartbeat_stop.is_set():
+            time.sleep(1)  # Check every second
+
+            current_time = time.time()
+            elapsed = current_time - start_time
+
+            # Log every heartbeat_interval seconds
+            if current_time - last_log_time >= heartbeat_interval:
+                heartbeat_count += 1
+                last_log_time = current_time
+
+                # Calculate progress percentage
+                if total_duration_seconds and total_duration_seconds > 0:
+                    progress_pct = min(99, (progress_state['time_seconds'] / total_duration_seconds) * 100)
+                    remaining_seconds = (total_duration_seconds - progress_state['time_seconds'])
+                    # Estimate ETA based on current speed
+                    speed_num = float(progress_state['speed'].replace('x', '') or 1)
+                    if speed_num > 0:
+                        eta_seconds = remaining_seconds / speed_num
+                        eta_min = int(eta_seconds // 60)
+                        eta_sec = int(eta_seconds % 60)
+                        eta_str = f"ETA: ~{eta_min}m{eta_sec}s"
+                    else:
+                        eta_str = "ETA: calculating..."
+                    progress_str = f"progress={progress_pct:.1f}%"
+                else:
+                    progress_str = "progress=N/A"
+                    eta_str = ""
+
+                # Format elapsed time
+                elapsed_min = int(elapsed // 60)
+                elapsed_sec = int(elapsed % 60)
+
+                # Build heartbeat message
+                msg_parts = [
+                    f"⏱️  Heartbeat #{heartbeat_count}",
+                    f"time={progress_state['time']}",
+                    f"speed={progress_state['speed']}",
+                    progress_str,
+                    f"frame={progress_state['frame']}",
+                    f"size={progress_state['size']}",
+                    f"elapsed={elapsed_min}m{elapsed_sec}s",
+                ]
+                if eta_str:
+                    msg_parts.append(eta_str)
+
+                logger.info(f"[{task_name}] {' | '.join(msg_parts)} | job={job_id}")
+
+                # Call progress callback if provided
+                if on_progress:
+                    on_progress({
+                        **progress_state,
+                        'heartbeat': heartbeat_count,
+                        'elapsed_seconds': elapsed,
+                        'progress_percent': progress_pct if total_duration_seconds else None
+                    })
+
+    # Start heartbeat thread
+    heartbeat_thread = threading.Thread(target=heartbeat_logger, daemon=True)
+    heartbeat_thread.start()
+
+    logger.info(f"[{task_name}] 🚀 Starting FFmpeg process | job={job_id}")
+    if total_duration_seconds:
+        logger.info(f"[{task_name}] 📊 Source duration: {int(total_duration_seconds//60)}m{int(total_duration_seconds%60)}s ({total_duration_seconds:.1f}s)")
+
+    try:
+        # Start FFmpeg process
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1  # Line buffered
+        )
+
+        # Read stderr in real-time (FFmpeg outputs progress to stderr)
+        while True:
+            line = process.stderr.readline()
+            if not line and process.poll() is not None:
+                break
+            if line:
+                stderr_lines.append(line)
+                parse_ffmpeg_progress(line)
+
+        # Get remaining output
+        _, remaining_stderr = process.communicate()
+        if remaining_stderr:
+            stderr_lines.append(remaining_stderr)
+
+        returncode = process.returncode
+
+    finally:
+        # Stop heartbeat thread
+        heartbeat_stop.set()
+        heartbeat_thread.join(timeout=2)
+
+    # Calculate final stats
+    total_elapsed = time.time() - start_time
+    elapsed_min = int(total_elapsed // 60)
+    elapsed_sec = int(total_elapsed % 60)
+
+    if returncode == 0:
+        logger.info(f"[{task_name}] ✅ FFmpeg completed successfully | "
+                   f"total_time={elapsed_min}m{elapsed_sec}s | "
+                   f"final_speed={progress_state['speed']} | "
+                   f"output_size={progress_state['size']} | job={job_id}")
+    else:
+        logger.error(f"[{task_name}] ❌ FFmpeg failed with code {returncode} | job={job_id}")
+
+    # Return CompletedProcess-like result
+    return subprocess.CompletedProcess(
+        args=cmd,
+        returncode=returncode,
+        stdout='',
+        stderr=''.join(stderr_lines)
+    )
 
 
 def transcode_360p_task(**context):
@@ -20,18 +253,23 @@ def transcode_360p_task(**context):
     - Resolution: 640x360 (16:9 aspect ratio)
     - Bitrate: ~500 Kbps video, 128 Kbps audio
     - Saves to /data/temp/{job_id}/outputs/360p.mp4
+    - Heartbeat logging every 30 seconds with progress
     """
     from app.db import SessionLocal
     from app.models.job import Job
 
     job_id = context['dag_run'].conf.get('job_id')
-    logger.info(f"[Task 4] Transcoding video to 360p for job {job_id}")
+    logger.info(f"[transcode_360p] ═══ STARTING 360P TRANSCODING ═══")
+    logger.info(f"[transcode_360p] Job ID: {job_id}")
 
     db = SessionLocal()
     try:
         job = db.query(Job).filter(Job.job_id == job_id).first()
         if not job:
             raise ValueError(f"Job {job_id} not found")
+
+        # Get video duration for progress tracking
+        video_duration = job.source_duration_seconds
 
         # Create output directory
         output_dir = Path(f"/data/temp/{job_id}/outputs")
@@ -57,20 +295,35 @@ def transcode_360p_task(**context):
             str(output_path)
         ]
 
-        logger.info(f"[Task 4] Starting 360p transcode: {' '.join(cmd)}")
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        logger.info(f"[transcode_360p] Command: {' '.join(cmd)}")
+
+        # Execute with progress logging (heartbeat every 30s)
+        result = run_ffmpeg_with_progress(
+            cmd=cmd,
+            task_name='transcode_360p',
+            job_id=job_id,
+            total_duration_seconds=video_duration,
+            heartbeat_interval=30
+        )
 
         if result.returncode != 0:
-            logger.error(f"FFmpeg error: {result.stderr}")
+            logger.error(f"[transcode_360p] FFmpeg error output:\n{result.stderr[-2000:]}")
             raise RuntimeError("360p transcoding failed")
 
-        logger.info(f"[Task 4] 360p transcode completed: {output_path}")
+        # Verify output file exists and has content
+        if output_path.exists():
+            output_size_mb = output_path.stat().st_size / (1024 * 1024)
+            logger.info(f"[transcode_360p] ═══ 360P TRANSCODING COMPLETED ═══")
+            logger.info(f"[transcode_360p] Output: {output_path}")
+            logger.info(f"[transcode_360p] Size: {output_size_mb:.2f} MB")
+        else:
+            raise RuntimeError(f"Output file not created: {output_path}")
 
         # Store output path in XCom
         context['task_instance'].xcom_push(key='360p_path', value=str(output_path))
 
     except Exception as e:
-        logger.error(f"[Task 4] 360p transcoding failed: {e}")
+        logger.error(f"[transcode_360p] ❌ FAILED: {e}")
         raise
     finally:
         db.close()
@@ -84,18 +337,23 @@ def transcode_720p_task(**context):
     - Resolution: 1280x720 (16:9 aspect ratio)
     - Bitrate: ~2000 Kbps video, 192 Kbps audio
     - Saves to /data/temp/{job_id}/outputs/720p.mp4
+    - Heartbeat logging every 30 seconds with progress
     """
     from app.db import SessionLocal
     from app.models.job import Job
 
     job_id = context['dag_run'].conf.get('job_id')
-    logger.info(f"[Task 5] Transcoding video to 720p for job {job_id}")
+    logger.info(f"[transcode_720p] ═══ STARTING 720P TRANSCODING ═══")
+    logger.info(f"[transcode_720p] Job ID: {job_id}")
 
     db = SessionLocal()
     try:
         job = db.query(Job).filter(Job.job_id == job_id).first()
         if not job:
             raise ValueError(f"Job {job_id} not found")
+
+        # Get video duration for progress tracking
+        video_duration = job.source_duration_seconds
 
         # Create output directory
         output_dir = Path(f"/data/temp/{job_id}/outputs")
@@ -121,20 +379,35 @@ def transcode_720p_task(**context):
             str(output_path)
         ]
 
-        logger.info(f"[Task 5] Starting 720p transcode: {' '.join(cmd)}")
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        logger.info(f"[transcode_720p] Command: {' '.join(cmd)}")
+
+        # Execute with progress logging (heartbeat every 30s)
+        result = run_ffmpeg_with_progress(
+            cmd=cmd,
+            task_name='transcode_720p',
+            job_id=job_id,
+            total_duration_seconds=video_duration,
+            heartbeat_interval=30
+        )
 
         if result.returncode != 0:
-            logger.error(f"FFmpeg error: {result.stderr}")
+            logger.error(f"[transcode_720p] FFmpeg error output:\n{result.stderr[-2000:]}")
             raise RuntimeError("720p transcoding failed")
 
-        logger.info(f"[Task 5] 720p transcode completed: {output_path}")
+        # Verify output file exists and has content
+        if output_path.exists():
+            output_size_mb = output_path.stat().st_size / (1024 * 1024)
+            logger.info(f"[transcode_720p] ═══ 720P TRANSCODING COMPLETED ═══")
+            logger.info(f"[transcode_720p] Output: {output_path}")
+            logger.info(f"[transcode_720p] Size: {output_size_mb:.2f} MB")
+        else:
+            raise RuntimeError(f"Output file not created: {output_path}")
 
         # Store output path in XCom
         context['task_instance'].xcom_push(key='720p_path', value=str(output_path))
 
     except Exception as e:
-        logger.error(f"[Task 5] 720p transcoding failed: {e}")
+        logger.error(f"[transcode_720p] ❌ FAILED: {e}")
         raise
     finally:
         db.close()
@@ -144,21 +417,26 @@ def extract_audio_mp3_task(**context):
     """
     Task 6: Extract audio and convert to MP3
 
-    - Output: MP3 audio (128 Kbps, 44.1 kHz)
+    - Output: MP3 audio (192 Kbps, 48 kHz)
     - Saves to /data/temp/{job_id}/outputs/audio.mp3
     - Used for audio-only playback or downloads
+    - Heartbeat logging every 30 seconds with progress
     """
     from app.db import SessionLocal
     from app.models.job import Job
 
     job_id = context['dag_run'].conf.get('job_id')
-    logger.info(f"[Task 6] Extracting audio to MP3 for job {job_id}")
+    logger.info(f"[extract_audio] ═══ STARTING AUDIO EXTRACTION ═══")
+    logger.info(f"[extract_audio] Job ID: {job_id}")
 
     db = SessionLocal()
     try:
         job = db.query(Job).filter(Job.job_id == job_id).first()
         if not job:
             raise ValueError(f"Job {job_id} not found")
+
+        # Get video duration for progress tracking
+        video_duration = job.source_duration_seconds
 
         # Create output directory
         output_dir = Path(f"/data/temp/{job_id}/outputs")
@@ -178,20 +456,35 @@ def extract_audio_mp3_task(**context):
             str(output_path)
         ]
 
-        logger.info(f"[Task 6] Starting audio extraction: {' '.join(cmd)}")
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        logger.info(f"[extract_audio] Command: {' '.join(cmd)}")
+
+        # Execute with progress logging (heartbeat every 30s)
+        result = run_ffmpeg_with_progress(
+            cmd=cmd,
+            task_name='extract_audio',
+            job_id=job_id,
+            total_duration_seconds=video_duration,
+            heartbeat_interval=30
+        )
 
         if result.returncode != 0:
-            logger.error(f"FFmpeg error: {result.stderr}")
+            logger.error(f"[extract_audio] FFmpeg error output:\n{result.stderr[-2000:]}")
             raise RuntimeError("Audio extraction failed")
 
-        logger.info(f"[Task 6] Audio extraction completed: {output_path}")
+        # Verify output file exists and has content
+        if output_path.exists():
+            output_size_mb = output_path.stat().st_size / (1024 * 1024)
+            logger.info(f"[extract_audio] ═══ AUDIO EXTRACTION COMPLETED ═══")
+            logger.info(f"[extract_audio] Output: {output_path}")
+            logger.info(f"[extract_audio] Size: {output_size_mb:.2f} MB")
+        else:
+            raise RuntimeError(f"Output file not created: {output_path}")
 
         # Store output path in XCom
         context['task_instance'].xcom_push(key='audio_mp3_path', value=str(output_path))
 
     except Exception as e:
-        logger.error(f"[Task 6] Audio extraction failed: {e}")
+        logger.error(f"[extract_audio] ❌ FAILED: {e}")
         raise
     finally:
         db.close()

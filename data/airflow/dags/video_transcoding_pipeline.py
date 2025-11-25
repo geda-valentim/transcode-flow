@@ -4,6 +4,13 @@ Airflow DAG for Video Transcoding Pipeline
 Handles complete video processing workflow from upload to delivery.
 This is the main DAG file that orchestrates all tasks.
 
+ARCHITECTURE NOTE (2025-11):
+Transcription is now handled by a separate `transcription_pipeline` DAG.
+This allows video processing to complete faster without waiting for
+CPU-intensive Whisper transcription. The main pipeline marks jobs with
+`transcription_status='pending'` and the transcription_pipeline picks
+them up asynchronously.
+
 Task modules are organized in the transcode_pipeline package:
 - validation_tasks: Video validation and thumbnail generation
 - transcoding_tasks: Video transcoding (360p, 720p) and audio extraction
@@ -35,7 +42,7 @@ from transcode_pipeline.transcoding_tasks import (
     transcode_360p_task,
     transcode_720p_task,
     extract_audio_mp3_task,
-    transcribe_audio_task
+    # transcribe_audio_task removed - now handled by separate transcription_pipeline DAG
     )
 from transcode_pipeline.hls_tasks import prepare_hls_task
 from transcode_pipeline.storage_tasks import (
@@ -47,6 +54,48 @@ from transcode_pipeline.database_tasks import (
     cleanup_temp_files_task
     )
 from transcode_pipeline.notification_tasks import send_notification_task
+
+import logging
+
+logger = logging.getLogger(__name__)
+
+
+def mark_transcription_pending_task(**context):
+    """
+    Mark job for transcription by the decoupled transcription_pipeline DAG.
+
+    If enable_transcription is True, sets transcription_status to 'pending'
+    so the transcription_pipeline can pick it up.
+    """
+    from app.db import SessionLocal
+    from app.models.job import Job, TranscriptionStatus
+
+    job_id = context['dag_run'].conf.get('job_id')
+    logger.info(f"[Transcription Handoff] Checking transcription flag for job {job_id}")
+
+    db = SessionLocal()
+    try:
+        job = db.query(Job).filter(Job.job_id == job_id).first()
+        if not job:
+            logger.warning(f"[Transcription Handoff] Job {job_id} not found")
+            return
+
+        if job.enable_transcription:
+            job.transcription_status = TranscriptionStatus.PENDING
+            db.commit()
+            logger.info(f"[Transcription Handoff] Job {job_id} marked PENDING for transcription_pipeline")
+            context['task_instance'].xcom_push(key='transcription_queued', value=True)
+        else:
+            job.transcription_status = TranscriptionStatus.DISABLED
+            db.commit()
+            logger.info(f"[Transcription Handoff] Transcription disabled for job {job_id}")
+            context['task_instance'].xcom_push(key='transcription_queued', value=False)
+
+    except Exception as e:
+        logger.error(f"[Transcription Handoff] Error: {e}")
+        raise
+    finally:
+        db.close()
 
 
 # ============================================================================
@@ -116,12 +165,11 @@ with DAG(
         python_callable=extract_audio_mp3_task,
     )
 
-    # Task 6b: Transcribe audio using Whisper (Sprint 3)
-    # Note: Increased execution_timeout for long audio transcriptions
-    transcribe_audio = PythonOperator(
-        task_id='transcribe_audio',
-        python_callable=transcribe_audio_task,
-        execution_timeout=timedelta(hours=2),  # Allow up to 2 hours for long videos
+    # Task 6b: Mark job for transcription (handoff to transcription_pipeline DAG)
+    # Transcription is now handled by a separate, decoupled DAG for better performance
+    mark_transcription_pending = PythonOperator(
+        task_id='mark_transcription_pending',
+        python_callable=mark_transcription_pending_task,
     )
 
     # Task 7: Prepare HLS segments for 360p
@@ -178,8 +226,13 @@ with DAG(
     # Validation first
     validate_video >> upload_to_minio >> generate_thumbnail
 
-    # Parallel processing: Transcode 360p, 720p, extract audio, and transcribe simultaneously
-    validate_video >> [transcode_360p, transcode_720p, extract_audio_mp3, transcribe_audio]
+    # Parallel processing: Transcode 360p, 720p, and extract audio
+    # Note: transcribe_audio removed - now handled by separate transcription_pipeline DAG
+    validate_video >> [transcode_360p, transcode_720p, extract_audio_mp3]
+
+    # Mark job for transcription after validation (runs in parallel with transcoding)
+    # The transcription_pipeline DAG will pick up pending jobs independently
+    validate_video >> mark_transcription_pending
 
     # HLS preparation for each resolution
     transcode_360p >> prepare_hls_360p >> upload_outputs
@@ -188,11 +241,9 @@ with DAG(
     # Audio goes directly to upload
     extract_audio_mp3 >> upload_outputs
 
-    # Transcription goes directly to upload (Sprint 3)
-    transcribe_audio >> upload_outputs
-
     # Thumbnails also go to upload
     generate_thumbnail >> upload_outputs
 
     # Final steps: Database update -> Cleanup -> Notification
+    # Note: Video processing completes without waiting for transcription
     upload_outputs >> update_database >> cleanup_temp_files >> send_notification

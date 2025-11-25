@@ -23,12 +23,23 @@ Base = declarative_base()
 
 class JobStatus(str, enum.Enum):
     """Job status enumeration."""
-    PENDING = "pending"
-    QUEUED = "queued"
-    PROCESSING = "processing"
-    COMPLETED = "completed"
-    FAILED = "failed"
-    CANCELLED = "cancelled"
+    PENDING = "PENDING"
+    QUEUED = "QUEUED"
+    PROCESSING = "PROCESSING"
+    COMPLETED = "COMPLETED"
+    FAILED = "FAILED"
+    CANCELLED = "CANCELLED"
+
+
+class TranscriptionStatus(str, enum.Enum):
+    """Transcription status enumeration for decoupled transcription DAG."""
+    DISABLED = "disabled"      # Transcription not enabled for this job
+    PENDING = "pending"        # Waiting to be picked up by transcription DAG
+    QUEUED = "queued"          # Queued in transcription DAG
+    PROCESSING = "processing"  # Currently being transcribed
+    COMPLETED = "completed"    # Transcription completed successfully
+    FAILED = "failed"          # Transcription failed
+    SKIPPED = "skipped"        # Skipped (e.g., no audio track)
 
 
 class Job(Base):
@@ -81,6 +92,22 @@ class Job(Base):
     audio_file_url = Column(String(2048), nullable=True)
     transcription_url = Column(String(2048), nullable=True)
     thumbnail_url = Column(String(2048), nullable=True)
+
+    # Transcription Status (Decoupled DAG)
+    transcription_status = Column(
+        Enum(
+            TranscriptionStatus,
+            name="transcription_status_enum",
+            values_callable=lambda obj: [e.value for e in obj]
+        ),
+        default=TranscriptionStatus.DISABLED,
+        nullable=False,
+    )
+    transcription_retry_count = Column(Integer, default=0, nullable=False)
+    transcription_error_message = Column(String(2048), nullable=True)
+    transcription_started_at = Column(DateTime(timezone=True), nullable=True)
+    transcription_completed_at = Column(DateTime(timezone=True), nullable=True)
+    transcription_dag_run_id = Column(String(255), nullable=True)
 
     # Processing Metrics
     processing_started_at = Column(DateTime(timezone=True), nullable=True)
